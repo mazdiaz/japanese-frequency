@@ -65,21 +65,23 @@ class AgentDocumentationTests(unittest.TestCase):
             mark_japanese_word_known,
             set_japanese_word_anki_status,
         )
-        for function in functions:
-            with self.subTest(function=function.__name__):
-                signature = f"`{function.__name__}{inspect.signature(function)}`"
-                self.assertEqual(
-                    section.count(signature),
-                    1,
-                    f"expected one canonical signature for {function.__name__}",
-                )
+        expected = {
+            f"`{function.__name__}{inspect.signature(function)}`"
+            for function in functions
+        }
+        declarations = re.findall(
+            r"`[A-Za-z_]\w*\([^`\n]*\)(?: -> [^`\n]+)?`", section
+        )
+        self.assertEqual(set(declarations), expected)
+        self.assertEqual(len(declarations), len(expected))
+
         names = "|".join(re.escape(function.__name__) for function in functions)
         outside = text.replace(section, "", 1)
-        declarations = re.findall(
+        outside_declarations = re.findall(
             rf"`(?:{names})\([^`\n]*\)(?: -> [^`\n]+)?`",
             outside,
         )
-        self.assertEqual(declarations, [])
+        self.assertEqual(outside_declarations, [])
 
     def test_agent_guide_documents_complete_cli_syntax(self):
         text = Path("AGENTS.md").read_text(encoding="utf-8")
