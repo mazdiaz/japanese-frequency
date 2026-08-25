@@ -532,6 +532,40 @@ explanations of spelling-versus-identity knowledge, source-key naming guidance,
 tier/score caveats, AI invocation examples, report handling, and safe snapshot
 updates.
 
+The repository also gains a root `AGENTS.md`. This is operational context for
+any future AI agent using or maintaining the project, independent of machine-wide
+agent configuration. It documents:
+
+- Project purpose: compare Migaku spelling knowledge with media vocabulary and
+  produce evidence-based mining recommendations.
+- Database and default local-data locations, while making clear that user-specific
+  paths may differ and must not be committed.
+- Required workflow: verify database readiness, import or refresh Migaku snapshot,
+  import media under a stable `source_key`, run bulk analysis, then use contextual
+  recommendation for uncertain candidates.
+- Exact Python APIs, agent wrapper names, CLI commands, success/error envelopes,
+  and representative calls.
+- Knowledge semantics: `known_spelling` is not `known_identity`; identity and
+  Anki states are tri-state; missing readings must never be invented.
+- Reading ambiguity rules and prohibition on arbitrary identity selection.
+- Mining policy: frequency is supporting evidence, scores are ranking heuristics,
+  reasons/components must remain visible, and context may override defaults.
+- Mutation safety: importing snapshots must not alter durable identity history;
+  agents must not mark known, unknown, or Anki state without user instruction or
+  explicit evidence.
+- Privacy/offline rules: never upload personal exports, database contents, reports,
+  encounter history, notes, or Anki state; normal analysis must not use internet
+  services.
+- Output discipline: return small candidate/result payloads, never dump the full
+  database into model context, and prefer CSV report paths for large analyses.
+- Update, backup, testing, and troubleshooting procedures, including stable error
+  codes and how to respond to ambiguity or missing imports.
+
+`README.md` links prominently to `AGENTS.md` for agent-oriented operation. Tests
+or documentation checks verify that all public mining tool names and the
+`{ok, result}` / `{ok, error}` contract appear in the file, reducing drift as APIs
+change.
+
 GitHub continues to contain code and documentation only. Migaku exports, media
 exports, generated reports, SQLite database, personal knowledge, encounters,
 notes, and Anki state remain local and ignored.
@@ -550,3 +584,5 @@ The feature is complete when the user or AI can:
 7. Repeat all normal analysis without network access.
 8. Reimport Migaku/media sources without losing corpus data or durable personal
    history.
+9. Give a future agent enough repository-local instructions in `AGENTS.md` to run
+   the complete workflow safely without prior conversation context.
