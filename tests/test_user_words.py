@@ -1,12 +1,18 @@
 import importlib
+import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from japanese_frequency.database import get_connection, initialize_database
-from japanese_frequency.errors import AmbiguousReadingError, DatabaseBusyError
+from japanese_frequency.errors import (
+    AmbiguousReadingError,
+    DatabaseBusyError,
+    InvalidInputError,
+)
 from japanese_frequency.user_words import (
     get_word_profile,
     mark_known,
@@ -177,6 +183,36 @@ class UserWordTests(unittest.TestCase):
         self.assertTrue(known_result["user"]["in_anki"])
         self.assertEqual(anki_result["user"], expected)
 
+    def test_known_and_anki_reject_non_boolean_values_without_mutation(self):
+        before = self.dump_user_words()
+        calls = (mark_known, set_in_anki)
+        invalid_values = (0, 1, "", "false", [], {}, None)
+
+        for call in calls:
+            for value in invalid_values:
+                with self.subTest(call=call.__name__, value=value):
+                    with self.assertRaises(InvalidInputError) as error:
+                        call("読む", "よむ", value, db_path=self.db_path)
+                    self.assertEqual(error.exception.code, "invalid_input")
+                    self.assertEqual(self.dump_user_words(), before)
+
+    def test_post_upsert_result_failure_rolls_back_mutation(self):
+        before = self.dump_user_words()
+        caught = None
+
+        with patch(
+            "japanese_frequency.user_words._user_from_row",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            try:
+                mark_known("読む", "よむ", db_path=self.db_path)
+            except Exception as error:
+                caught = error
+
+        self.assertEqual(self.dump_user_words(), before)
+        self.assertIsInstance(caught, DatabaseBusyError)
+        self.assertEqual(caught.code, "database_busy")
+
     def test_user_state_persists_across_module_reload(self):
         import japanese_frequency.user_words as user_words
 
@@ -196,6 +232,36 @@ class UserWordTests(unittest.TestCase):
         self.assertEqual(profile["reading"], "よむ")
         self.assertEqual(profile["frequency"]["jpdb"]["rank"], 312)
         self.assertEqual(profile["user"]["encounter_count"], 1)
+
+    def test_profile_uses_one_connection_and_explicit_read_transaction(self):
+        self.insert_frequency("読む", "よむ", "jpdb", 312)
+        self.insert_user_word("読む", "よむ", known=1)
+
+        for reading in ("よむ", None):
+            connections = []
+            statements = []
+
+            def tracked_connection(db_path):
+                connection = get_connection(db_path)
+                connection.set_trace_callback(statements.append)
+                connections.append(connection)
+                return connection
+
+            with self.subTest(reading=reading):
+                with patch(
+                    "japanese_frequency.user_words.get_connection",
+                    side_effect=tracked_connection,
+                ), patch(
+                    "japanese_frequency.lookup.get_connection",
+                    side_effect=AssertionError("separate lookup connection"),
+                ):
+                    result = get_word_profile(
+                        "読む", reading, db_path=self.db_path
+                    )
+
+                self.assertTrue(result["found"])
+                self.assertEqual(len(connections), 1)
+                self.assertIn("BEGIN", statements)
 
     def test_precise_unknown_profile_has_stable_empty_shape(self):
         self.assertEqual(

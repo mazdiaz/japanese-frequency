@@ -3,8 +3,8 @@ from contextlib import closing
 from datetime import datetime, timezone
 
 from japanese_frequency.database import _database_error, get_connection
-from japanese_frequency.errors import AmbiguousReadingError
-from japanese_frequency.lookup import lookup_frequency
+from japanese_frequency.errors import AmbiguousReadingError, InvalidInputError
+from japanese_frequency.lookup import _lookup_frequency
 from japanese_frequency.normalization import normalize_reading, normalize_word
 
 
@@ -68,19 +68,24 @@ def _mutate(word, reading, sql, parameters, *, db_path) -> dict:
                 user_row = connection.execute(
                     _USER_SELECT, (normalized_word, normalized_reading)
                 ).fetchone()
+                frequency = _lookup_frequency(
+                    connection, normalized_word, normalized_reading, True
+                )["frequency"]
+                result = {
+                    "found": True,
+                    "word": normalized_word,
+                    "reading": normalized_reading,
+                    "frequency": frequency,
+                    "user": _user_from_row(user_row),
+                }
     except sqlite3.Error as error:
         raise _database_error(error) from error
+    return result
 
-    frequency = lookup_frequency(
-        normalized_word, normalized_reading, db_path=db_path
-    )["frequency"]
-    return {
-        "found": True,
-        "word": normalized_word,
-        "reading": normalized_reading,
-        "frequency": frequency,
-        "user": _user_from_row(user_row),
-    }
+
+def _require_bool(value, name) -> None:
+    if type(value) is not bool:
+        raise InvalidInputError(f"{name} must be a boolean")
 
 
 def record_encounter(word, reading=None, *, db_path=None, now=None) -> dict:
@@ -103,6 +108,7 @@ def record_encounter(word, reading=None, *, db_path=None, now=None) -> dict:
 
 
 def mark_known(word, reading=None, known=True, *, db_path=None) -> dict:
+    _require_bool(known, "known")
     return _mutate(
         word,
         reading,
@@ -111,12 +117,13 @@ def mark_known(word, reading=None, known=True, *, db_path=None) -> dict:
         VALUES (?, ?, ?)
         ON CONFLICT(word, reading) DO UPDATE SET known = excluded.known
         """,
-        (int(bool(known)),),
+        (int(known),),
         db_path=db_path,
     )
 
 
 def set_in_anki(word, reading=None, in_anki=True, *, db_path=None) -> dict:
+    _require_bool(in_anki, "in_anki")
     return _mutate(
         word,
         reading,
@@ -125,44 +132,55 @@ def set_in_anki(word, reading=None, in_anki=True, *, db_path=None) -> dict:
         VALUES (?, ?, ?)
         ON CONFLICT(word, reading) DO UPDATE SET in_anki = excluded.in_anki
         """,
-        (int(bool(in_anki)),),
+        (int(in_anki),),
         db_path=db_path,
     )
 
 
-def _read_user_rows(word, *, db_path) -> dict:
-    try:
-        with closing(get_connection(db_path)) as connection:
-            rows = connection.execute(
-                "SELECT reading, known, in_anki, encounter_count, first_seen, "
-                "last_seen, notes FROM user_words WHERE word = ? ORDER BY reading",
-                (word,),
-            ).fetchall()
-    except sqlite3.Error as error:
-        raise _database_error(error) from error
+def _read_user_rows(connection, word) -> dict:
+    rows = connection.execute(
+        "SELECT reading, known, in_anki, encounter_count, first_seen, "
+        "last_seen, notes FROM user_words WHERE word = ? ORDER BY reading",
+        (word,),
+    ).fetchall()
     return {row["reading"]: _user_from_row(row) for row in rows}
 
 
 def get_word_profile(word, reading=None, *, db_path=None) -> dict:
     normalized_word = normalize_word(word)
-    if reading is not None:
-        normalized_reading = normalize_reading(reading)
-        frequency_result = lookup_frequency(
-            normalized_word, normalized_reading, db_path=db_path
-        )
-        user = _read_user_rows(normalized_word, db_path=db_path).get(
-            normalized_reading, {}
-        )
+    normalized_reading = normalize_reading(reading)
+    precise = reading is not None
+    try:
+        with closing(get_connection(db_path)) as connection:
+            with connection:
+                connection.execute("BEGIN")
+                frequency_result = _lookup_frequency(
+                    connection, normalized_word, normalized_reading, precise
+                )
+                users = _read_user_rows(connection, normalized_word)
+                result = _format_profile(
+                    normalized_word,
+                    normalized_reading,
+                    precise,
+                    frequency_result,
+                    users,
+                )
+    except sqlite3.Error as error:
+        raise _database_error(error) from error
+    return result
+
+
+def _format_profile(word, reading, precise, frequency_result, users) -> dict:
+    if precise:
+        user = users.get(reading, {})
         return {
             "found": frequency_result["found"] or bool(user),
-            "word": normalized_word,
-            "reading": normalized_reading,
+            "word": word,
+            "reading": reading,
             "frequency": frequency_result["frequency"],
             "user": user,
         }
 
-    frequency_result = lookup_frequency(normalized_word, db_path=db_path)
-    users = _read_user_rows(normalized_word, db_path=db_path)
     matches = []
     corpus_readings = set()
     for frequency_match in frequency_result["matches"]:
@@ -183,4 +201,4 @@ def get_word_profile(word, reading=None, *, db_path=None) -> dict:
                 "user": users[user_reading],
             }
         )
-    return {"found": bool(matches), "word": normalized_word, "matches": matches}
+    return {"found": bool(matches), "word": word, "matches": matches}

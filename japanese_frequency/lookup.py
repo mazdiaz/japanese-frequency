@@ -59,22 +59,14 @@ def _frequency_from_row(row) -> dict:
     return frequency
 
 
-def lookup_frequency(word: str, reading: str | None = None, *, db_path=None) -> dict:
-    normalized_word = normalize_word(word)
-    normalized_reading = normalize_reading(reading)
-    precise = reading is not None
+def _lookup_frequency(connection, normalized_word, normalized_reading, precise) -> dict:
     where_sql = "WHERE word = ?"
     parameters = [normalized_word]
     if precise:
         where_sql += " AND reading = ?"
         parameters.append(normalized_reading)
     query = f"{_GROUPED_SELECT} {where_sql} GROUP BY reading {ORDER_SQL}"
-
-    try:
-        with closing(get_connection(db_path)) as connection:
-            rows = connection.execute(query, parameters).fetchall()
-    except sqlite3.Error as error:
-        raise _database_error(error) from error
+    rows = connection.execute(query, parameters).fetchall()
 
     if precise:
         if not rows:
@@ -96,3 +88,16 @@ def lookup_frequency(word: str, reading: str | None = None, *, db_path=None) -> 
         for row in rows
     ]
     return {"found": bool(matches), "word": normalized_word, "matches": matches}
+
+
+def lookup_frequency(word: str, reading: str | None = None, *, db_path=None) -> dict:
+    normalized_word = normalize_word(word)
+    normalized_reading = normalize_reading(reading)
+    precise = reading is not None
+    try:
+        with closing(get_connection(db_path)) as connection:
+            return _lookup_frequency(
+                connection, normalized_word, normalized_reading, precise
+            )
+    except sqlite3.Error as error:
+        raise _database_error(error) from error
