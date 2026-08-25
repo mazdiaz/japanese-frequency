@@ -87,7 +87,8 @@ CREATE TABLE personal_source_metadata (
     source TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
     imported_at TEXT NOT NULL,
-    row_count INTEGER NOT NULL,
+    source_row_count INTEGER NOT NULL,
+    entry_count INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
     notes TEXT
 );
