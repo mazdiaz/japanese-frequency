@@ -20,13 +20,18 @@ _NOTES = "Duplicate spellings collapsed after NFC normalization."
 def import_migaku_known_words(path, *, db_path=None, now=None) -> dict:
     path = Path(path)
     initialize_database(db_path)
+    connection = get_connection(db_path)
     try:
-        with closing(get_connection(db_path)) as connection:
-            metadata = _stage_migaku(connection, path, now=now)
-            _publish_migaku(connection, metadata)
-            return metadata
+        metadata = _stage_migaku(connection, path, now=now)
+        _publish_migaku(connection, metadata)
     except sqlite3.Error as error:
         raise _database_error(error) from error
+    finally:
+        try:
+            connection.close()
+        except BaseException:
+            pass
+    return metadata
 
 
 def _stage_migaku(connection, path, *, now):
@@ -50,7 +55,7 @@ def _stage_migaku(connection, path, *, now):
                         (word,),
                     )
                     source_rows += 1
-        except UnicodeError as error:
+        except (OSError, UnicodeError) as error:
             raise SourceFormatError(
                 f"migaku source could not be parsed: {error}"
             ) from error

@@ -179,6 +179,88 @@ class KnowledgeTests(unittest.TestCase):
                 )
         self.assertEqual(error.exception.code, "source_format_error")
 
+    def test_immutable_snapshot_read_failure_is_typed_format_error(self):
+        original_open = Path.open
+
+        class ReadFailure:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+
+            def __enter__(self):
+                self.wrapped.__enter__()
+                return self
+
+            def __exit__(self, *arguments):
+                return self.wrapped.__exit__(*arguments)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise OSError("immutable snapshot unavailable")
+
+        def fail_snapshot_read(path, mode="r", *arguments, **keywords):
+            opened = original_open(path, mode, *arguments, **keywords)
+            if mode == "r" and path.name == "source.txt":
+                return ReadFailure(opened)
+            return opened
+
+        with patch.object(Path, "open", new=fail_snapshot_read):
+            with self.assertRaises(SourceFormatError) as error:
+                import_migaku_known_words(
+                    self.valid_source, db_path=self.db_path, now=self.clock
+                )
+
+        self.assertEqual(error.exception.code, "source_format_error")
+        self.assertIn("could not be parsed", str(error.exception))
+        self.assertIsInstance(error.exception.__cause__, OSError)
+
+    def test_connection_close_failure_preserves_staging_error(self):
+        real_connection = get_connection(self.db_path)
+
+        class CloseFailure:
+            def __getattr__(self, name):
+                return getattr(real_connection, name)
+
+            def close(self):
+                real_connection.close()
+                raise OSError("close failed")
+
+        with patch(
+            "japanese_frequency.knowledge.get_connection",
+            return_value=CloseFailure(),
+        ):
+            with self.assertRaises(SourceFormatError) as error:
+                import_migaku_known_words(
+                    self.write("読む\n\n語\n"),
+                    db_path=self.db_path,
+                    now=self.clock,
+                )
+
+        self.assertIn("line 2", str(error.exception))
+
+    def test_connection_close_failure_after_commit_returns_success(self):
+        real_connection = get_connection(self.db_path)
+
+        class CloseFailure:
+            def __getattr__(self, name):
+                return getattr(real_connection, name)
+
+            def close(self):
+                real_connection.close()
+                raise OSError("close failed")
+
+        with patch(
+            "japanese_frequency.knowledge.get_connection",
+            return_value=CloseFailure(),
+        ):
+            result = import_migaku_known_words(
+                self.valid_source, db_path=self.db_path, now=self.clock
+            )
+
+        self.assertEqual(result["source"], "migaku")
+        self.assertEqual(get_known_spelling("読む", db_path=self.db_path)["known"], True)
+
     def test_busy_lock_is_typed_and_preserves_snapshot(self):
         import_migaku_known_words(
             self.valid_source, db_path=self.db_path, now=self.clock
