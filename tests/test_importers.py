@@ -341,6 +341,7 @@ class ImporterTests(unittest.TestCase):
             "rank": "\t".join(BCCWJ_HEADER) + "\n" + self.bccwj_row("ヨム", "読む", 1, 0.1, rank="x") + "\n",
             "frequency": "\t".join(BCCWJ_HEADER) + "\n" + self.bccwj_row("ヨム", "読む", -1, 0.1) + "\n",
             "pmw": "\t".join(BCCWJ_HEADER) + "\n" + self.bccwj_row("ヨム", "読む", 1, "x") + "\n",
+            "empty_word": "\t".join(BCCWJ_HEADER) + "\n" + self.bccwj_row("ヨム", "", 1, 0.1) + "\n",
             "word": "\t".join(BCCWJ_HEADER) + "\n" + self.bccwj_row("ヨム", " ", 1, 0.1) + "\n",
             "reading": "\t".join(BCCWJ_HEADER) + "\n" + self.bccwj_row(" ", "読む", 1, 0.1) + "\n",
             "empty": "\t".join(BCCWJ_HEADER) + "\n",

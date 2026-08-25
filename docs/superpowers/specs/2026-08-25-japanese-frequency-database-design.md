@@ -53,6 +53,14 @@ are `rank`, `lForm`, `lemma`, `frequency`, and `pmw`. `lForm` readings use
 katakana. The same lemma and reading can occur under different part-of-speech
 or word-type identities.
 
+The configured BCCWJ SHA-256 is the project's recorded hash of the inspected
+pinned ZIP, not an upstream-published checksum. It provides reproducible byte
+identity for setup and opt-in integration tests.
+
+Exactly 14 rows in the pinned TSV have an empty raw `lForm`. Those rows use
+canonical reading `""`. Whitespace-only `lForm` and empty or whitespace-only
+`lemma` are invalid.
+
 The upstream manual states its exact use and redistribution terms. README text
 will quote or accurately reference those terms and link to the upstream source,
 without strengthening or weakening them. Source data and generated databases
@@ -123,7 +131,10 @@ hiragana equivalents are defined; it does not perform morphological or spelling
 normalization.
 
 The canonical vocabulary identity is `(word, reading)`. An empty reading is a
-valid identity for user-only words whose reading is unknown.
+valid identity when reading is unavailable, including user-entered words and
+the 14 BCCWJ rows with exactly empty raw `lForm`. Empty-reading corpus entries
+remain distinct from populated readings, appear in word-only results, and
+participate in omitted-reading resolution.
 
 ## Database Schema
 

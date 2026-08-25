@@ -5,6 +5,7 @@ from pathlib import Path
 
 from japanese_frequency.importers import import_bccwj, import_jpdb
 from japanese_frequency.lookup import lookup_frequency
+from japanese_frequency.setup import BCCWJ_SHA256, JPDB_SHA256, sha256_file
 
 
 class RealSourceTests(unittest.TestCase):
@@ -20,11 +21,15 @@ class RealSourceTests(unittest.TestCase):
         "set JPDB_SOURCE for real-source smoke test",
     )
     def test_real_jpdb_import_and_lookup(self):
-        metadata = import_jpdb(os.environ["JPDB_SOURCE"], db_path=self.db_path)
+        source = Path(os.environ["JPDB_SOURCE"])
+        self.assertEqual(sha256_file(source), JPDB_SHA256)
+
+        metadata = import_jpdb(source, db_path=self.db_path)
         result = lookup_frequency("読む", "よむ", db_path=self.db_path)
 
-        self.assertGreater(metadata["source_row_count"], 0)
-        self.assertGreater(metadata["entry_count"], 0)
+        self.assertEqual(metadata["sha256"], JPDB_SHA256)
+        self.assertEqual(metadata["source_row_count"], 278_946)
+        self.assertEqual(metadata["entry_count"], 276_190)
         self.assertTrue(result["found"])
         self.assertIsInstance(result["frequency"]["jpdb"]["rank"], int)
 
@@ -33,11 +38,15 @@ class RealSourceTests(unittest.TestCase):
         "set BCCWJ_SOURCE for real-source smoke test",
     )
     def test_real_bccwj_import_and_lookup(self):
-        metadata = import_bccwj(os.environ["BCCWJ_SOURCE"], db_path=self.db_path)
+        source = Path(os.environ["BCCWJ_SOURCE"])
+        self.assertEqual(sha256_file(source), BCCWJ_SHA256)
+
+        metadata = import_bccwj(source, db_path=self.db_path)
         result = lookup_frequency("読む", "よむ", db_path=self.db_path)
 
+        self.assertEqual(metadata["sha256"], BCCWJ_SHA256)
         self.assertEqual(metadata["source_row_count"], 2_434_619)
-        self.assertGreater(metadata["entry_count"], 0)
+        self.assertEqual(metadata["entry_count"], 2_391_203)
         self.assertTrue(result["found"])
         self.assertIn("bccwj_luw", result["frequency"])
 

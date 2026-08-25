@@ -60,7 +60,9 @@ and minimum populated kana rank.
 - Dataset: [Balanced Corpus of Contemporary Written Japanese Long Unit Word Frequency List, Version 1.0](https://doi.org/10.15084/00003212)
 - File: `BCCWJ_frequencylist_luw_ver1_0.zip`
 - Pinned URL: <https://repository.ninjal.ac.jp/record/3228/files/BCCWJ_frequencylist_luw_ver1_0.zip>
-- SHA-256: `0a23e56283187ed4f65d70b89919e05652470474855e1d35566d4039ecb7973a`
+- Project-recorded SHA-256 of the inspected pinned file (not an
+  upstream-published checksum):
+  `0a23e56283187ed4f65d70b89919e05652470474855e1d35566d4039ecb7973a`
 - Upstream manual: [BCCWJ frequency-list manual ver.1.0](https://clrd.ninjal.ac.jp/bccwj/data-files/frequency-list/BCCWJ_frequencylist_manual_ver1_0b.pdf)
 
 Manual section 6 states these terms:
@@ -81,6 +83,14 @@ part of speech and word type differ. Import sums frequency and frequency per
 million for those rows. Stored BCCWJ rank is project-computed, not upstream
 rank: sequential order by summed frequency descending, then word and reading
 ascending.
+
+The pinned BCCWJ LUW file has exactly 14 rows whose raw `lForm` is empty. The
+importer stores those rows with canonical reading `""` only when raw `lForm` is
+exactly empty. Whitespace-only `lForm` and empty or whitespace-only `lemma`
+remain invalid. Empty-reading corpus entries are distinct identities: they
+appear in word-only lookup results and participate in omitted-reading
+resolution, which can make a lemma ambiguous when populated readings also
+exist.
 
 ## Python API
 

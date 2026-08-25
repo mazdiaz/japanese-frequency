@@ -1,8 +1,11 @@
 import hashlib
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -201,6 +204,50 @@ class SetupTests(unittest.TestCase):
         stdout.flush()
         self.assertEqual(result, 0)
         self.assertEqual(json.loads(output.getvalue().decode("utf-8")), report)
+
+    def test_cli_writes_unicode_error_json_when_stderr_starts_as_cp1252(self):
+        archive = self.root / "bad-bccwj.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("文档.tsv", "wrong")
+        project = Path(__file__).parents[1]
+        command = (
+            "import sys; "
+            "sys.stderr.reconfigure(encoding='cp1252', errors='strict'); "
+            "import setup_database; "
+            "raise SystemExit(setup_database.main(sys.argv[1:]))"
+        )
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                command,
+                "--jpdb-source",
+                str(self.valid_jpdb),
+                "--with-bccwj",
+                "--bccwj-source",
+                str(archive),
+                "--db",
+                str(self.db_path),
+            ],
+            cwd=project,
+            capture_output=True,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertNotIn(b"UnicodeEncodeError", completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stderr.decode("utf-8")),
+            {
+                "error": {
+                    "type": "source_format_error",
+                    "message": (
+                        "bccwj ZIP must contain only "
+                        "'BCCWJ_frequencylist_luw_ver1_0.tsv'; got ['文档.tsv']"
+                    ),
+                }
+            },
+        )
 
 
 if __name__ == "__main__":
