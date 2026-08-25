@@ -292,6 +292,23 @@ class ImporterTests(unittest.TestCase):
             [("見る", "みる", 1, 12.0, 1.2), ("読む", "よむ", 2, 12.0, 1.2)],
         )
 
+    def test_bccwj_accepts_official_redacted_row_with_empty_lform(self):
+        source = self.write_bccwj(
+            [self.bccwj_row("", "■", 11, "0.1320377", rank="160807")]
+        )
+
+        result = import_bccwj(source, db_path=self.db_path, now=self.clock)
+
+        self.assertEqual(result["source_row_count"], 1)
+        with closing(get_connection(self.db_path)) as connection:
+            row = connection.execute(
+                "SELECT word, reading, frequency FROM frequency "
+                "WHERE source='bccwj_luw'"
+            ).fetchone()
+        self.assertEqual(
+            (row["word"], row["reading"], row["frequency"]), ("■", "", 11.0)
+        )
+
     def test_replacing_each_source_preserves_other_source_and_user_words(self):
         import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
         import_bccwj(self.valid_bccwj, db_path=self.db_path, now=self.clock)

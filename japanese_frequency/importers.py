@@ -135,13 +135,13 @@ def _nonnegative_number(value, source, row_number, field) -> float:
     return parsed
 
 
-def _identity(word, reading, source, row_number):
+def _identity(word, reading, source, row_number, *, allow_empty_reading=False):
     try:
         normalized_word = normalize_word(word)
         normalized_reading = normalize_reading(reading)
     except InvalidInputError as error:
         raise SourceFormatError(f"{source} row {row_number}: {error}") from error
-    if not normalized_reading:
+    if not normalized_reading and not (allow_empty_reading and reading == ""):
         raise SourceFormatError(f"{source} row {row_number}: reading must be nonempty")
     return normalized_word, normalized_reading
 
@@ -346,7 +346,11 @@ def _import_bccwj_snapshot(path, *, filename, digest, db_path, version, now):
                             )
                         _positive_integer(row[0], "bccwj", row_number, "rank")
                         word, reading = _identity(
-                            row[2], row[1], "bccwj", row_number
+                            row[2],
+                            row[1],
+                            "bccwj",
+                            row_number,
+                            allow_empty_reading=True,
                         )
                         frequency = _positive_integer(
                             row[6], "bccwj", row_number, "frequency"

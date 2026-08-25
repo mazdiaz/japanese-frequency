@@ -6,6 +6,11 @@ from japanese_frequency.errors import JapaneseFrequencyError
 from japanese_frequency.setup import setup_database
 
 
+def _configure_utf8():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+
+
 def _parser():
     parser = argparse.ArgumentParser(description="Initialize Japanese frequency data")
     parser.add_argument("--jpdb-source")
@@ -16,6 +21,7 @@ def _parser():
 
 
 def main(argv=None):
+    _configure_utf8()
     arguments = _parser().parse_args(argv)
     try:
         report = setup_database(

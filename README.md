@@ -165,3 +165,15 @@ Default suite is offline and deterministic. It uses temporary databases,
 synthetic fixtures, mocked downloads, and injected clocks. Real-corpus
 integration runs must use sources already downloaded by user and never download
 implicitly.
+
+Run opt-in smoke tests against local source files in PowerShell:
+
+```powershell
+$env:JPDB_SOURCE='C:\corpora\jpdb_v2.2.csv'
+python -m unittest tests.test_real_sources.RealSourceTests.test_real_jpdb_import_and_lookup -v
+
+$env:BCCWJ_SOURCE='C:\corpora\BCCWJ_frequencylist_luw_ver1_0.zip'
+python -m unittest tests.test_real_sources.RealSourceTests.test_real_bccwj_import_and_lookup -v
+```
+
+Unset environment variables leave these tests skipped during default discovery.

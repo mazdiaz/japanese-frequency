@@ -189,6 +189,19 @@ class SetupTests(unittest.TestCase):
             {"error": {"type": "download_error", "message": "failed"}},
         )
 
+    def test_cli_reconfigures_stdout_for_unicode_report_paths(self):
+        report = {"database_path": "C:\\文档\\frequency.db"}
+        output = io.BytesIO()
+        stdout = io.TextIOWrapper(output, encoding="cp1252")
+
+        with patch("setup_database.setup_database", return_value=report):
+            with redirect_stdout(stdout):
+                result = setup_cli.main(["--jpdb-source", str(self.valid_jpdb)])
+
+        stdout.flush()
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output.getvalue().decode("utf-8")), report)
+
 
 if __name__ == "__main__":
     unittest.main()
