@@ -58,9 +58,29 @@ class DatabaseTests(unittest.TestCase):
                     "WHERE type IN ('table', 'index') AND sql IS NOT NULL"
                 )
             }
-            frequency_columns = {
-                row["name"]: (row["type"], row["notnull"], row["dflt_value"])
-                for row in connection.execute("PRAGMA table_info(frequency)")
+            columns = {
+                table: [
+                    (
+                        row["name"],
+                        row["type"],
+                        row["notnull"],
+                        row["dflt_value"],
+                        row["pk"],
+                    )
+                    for row in connection.execute(f"PRAGMA table_info({table})")
+                ]
+                for table in ("frequency", "user_words", "source_metadata")
+            }
+            indexes = {
+                index: [
+                    row["name"]
+                    for row in connection.execute(f"PRAGMA index_info({index})")
+                ]
+                for index in (
+                    "idx_frequency_word",
+                    "idx_frequency_word_reading",
+                    "idx_frequency_source_rank",
+                )
             }
 
         self.assertTrue({"frequency", "user_words", "source_metadata"} <= objects.keys())
@@ -73,19 +93,53 @@ class DatabaseTests(unittest.TestCase):
             <= objects.keys()
         )
         self.assertEqual(
-            frequency_columns,
-            {
-                "word": ("TEXT", 1, None),
-                "reading": ("TEXT", 1, "''"),
-                "source": ("TEXT", 1, None),
-                "rank": ("INTEGER", 0, None),
-                "frequency": ("REAL", 0, None),
-                "frequency_per_million": ("REAL", 0, None),
-                "kana_rank": ("INTEGER", 0, None),
-            },
+            columns["frequency"],
+            [
+                ("word", "TEXT", 1, None, 1),
+                ("reading", "TEXT", 1, "''", 2),
+                ("source", "TEXT", 1, None, 3),
+                ("rank", "INTEGER", 0, None, 0),
+                ("frequency", "REAL", 0, None, 0),
+                ("frequency_per_million", "REAL", 0, None, 0),
+                ("kana_rank", "INTEGER", 0, None, 0),
+            ],
+        )
+        self.assertEqual(
+            columns["user_words"],
+            [
+                ("word", "TEXT", 1, None, 1),
+                ("reading", "TEXT", 1, "''", 2),
+                ("known", "INTEGER", 1, "0", 0),
+                ("in_anki", "INTEGER", 1, "0", 0),
+                ("encounter_count", "INTEGER", 1, "0", 0),
+                ("first_seen", "TEXT", 0, None, 0),
+                ("last_seen", "TEXT", 0, None, 0),
+                ("notes", "TEXT", 0, None, 0),
+            ],
+        )
+        self.assertEqual(
+            columns["source_metadata"],
+            [
+                ("source", "TEXT", 0, None, 1),
+                ("version", "TEXT", 0, None, 0),
+                ("filename", "TEXT", 0, None, 0),
+                ("imported_at", "TEXT", 0, None, 0),
+                ("source_row_count", "INTEGER", 0, None, 0),
+                ("entry_count", "INTEGER", 0, None, 0),
+                ("sha256", "TEXT", 0, None, 0),
+                ("notes", "TEXT", 0, None, 0),
+            ],
         )
         self.assertIn("CHECK (known IN (0, 1))", objects["user_words"])
+        self.assertIn("CHECK (in_anki IN (0, 1))", objects["user_words"])
         self.assertIn("CHECK (encounter_count >= 0)", objects["user_words"])
+        self.assertEqual(indexes["idx_frequency_word"], ["word"])
+        self.assertEqual(
+            indexes["idx_frequency_word_reading"], ["word", "reading"]
+        )
+        self.assertEqual(
+            indexes["idx_frequency_source_rank"], ["source", "rank"]
+        )
 
     def test_initialize_is_idempotent(self):
         initialize_database(self.db_path)

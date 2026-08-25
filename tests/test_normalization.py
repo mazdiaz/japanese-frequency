@@ -21,6 +21,10 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_reading(" ヨム "), "よむ")
         self.assertEqual(normalize_reading("ウ\u3099ァ"), "ゔぁ")
 
+    def test_reading_converts_katakana_iteration_marks(self):
+        self.assertEqual(normalize_reading("ヽ"), "ゝ")
+        self.assertEqual(normalize_reading("ヾ"), "ゞ")
+
     def test_reading_preserves_none_and_empty_reading(self):
         self.assertIsNone(normalize_reading(None))
         self.assertEqual(normalize_reading("  "), "")
