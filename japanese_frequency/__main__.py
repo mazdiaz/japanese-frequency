@@ -24,7 +24,11 @@ def _write_json(payload):
 
 
 def _error_object(error):
-    return {"type": error.code, "message": str(error)}
+    safe_messages = {
+        "database_busy": "database is temporarily unavailable",
+        "database_error": "database operation failed",
+    }
+    return {"type": error.code, "message": safe_messages.get(error.code, str(error))}
 
 
 class JsonArgumentParser(argparse.ArgumentParser):

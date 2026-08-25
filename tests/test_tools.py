@@ -1,4 +1,6 @@
 import io
+import socket
+import sqlite3
 import tempfile
 import unittest
 from contextlib import closing, redirect_stderr, redirect_stdout
@@ -43,7 +45,16 @@ class ToolTests(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
 
-        with patch("socket.create_connection", side_effect=AssertionError("network used")):
+        class OfflineSocket(socket.socket):
+            def connect(self, *args, **kwargs):
+                raise AssertionError("socket.connect used")
+
+            def connect_ex(self, *args, **kwargs):
+                raise AssertionError("socket.connect_ex used")
+
+        with patch(
+            "socket.create_connection", side_effect=AssertionError("network used")
+        ), patch("socket.socket", OfflineSocket):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 responses = [call() for call in calls]
 
@@ -70,20 +81,29 @@ class ToolTests(unittest.TestCase):
                 self.assertTrue(response["error"]["message"])
 
     def test_database_and_busy_failures_keep_distinct_stable_types(self):
-        errors = (DatabaseError("broken"), DatabaseBusyError("locked"))
+        errors = (
+            DatabaseError("no such table: private_frequency_schema"),
+            DatabaseBusyError("database is locked: private_frequency_schema"),
+            sqlite3.OperationalError("no such table: private_frequency_schema"),
+            sqlite3.OperationalError("database is locked: private_frequency_schema"),
+        )
 
         for error in errors:
-            with self.subTest(error=error.code):
+            error_type = (
+                error.code
+                if isinstance(error, (DatabaseError, DatabaseBusyError))
+                else "database_busy" if "locked" in str(error) else "database_error"
+            )
+            with self.subTest(error_type=error_type, source=type(error).__name__):
                 with patch("japanese_frequency.tools.lookup_frequency", side_effect=error):
                     response = lookup_japanese_frequency("読む", db_path=self.db_path)
 
-                self.assertEqual(
-                    response,
-                    {
-                        "ok": False,
-                        "error": {"type": error.code, "message": str(error)},
-                    },
-                )
+                self.assertEqual(set(response), {"ok", "error"})
+                self.assertIs(response["ok"], False)
+                self.assertEqual(response["error"]["type"], error_type)
+                self.assertIn("message", response["error"])
+                self.assertTrue(response["error"]["message"])
+                self.assertNotIn("private_frequency_schema", response["error"]["message"])
 
 
 if __name__ == "__main__":

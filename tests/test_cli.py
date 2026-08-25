@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -91,10 +92,32 @@ class CliTests(unittest.TestCase):
                 self.assertIn("message", self.payload(result)["error"])
 
     def test_database_error_is_machine_readable_and_nonzero(self):
-        result = self.run_cli("lookup", "読む", db_path=self.db_path.parent)
+        malformed_db = self.db_path.parent / "private_frequency_schema.db"
+        sqlite3.connect(malformed_db).close()
+        result = self.run_cli("lookup", "読む", db_path=malformed_db)
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.payload(result)["error"]["type"], "database_error")
+        error = self.payload(result)["error"]
+        self.assertEqual(error["type"], "database_error")
+        self.assertIn("message", error)
+        self.assertTrue(error["message"])
+        self.assertNotIn("frequency", error["message"])
+
+    def test_database_busy_error_does_not_expose_sqlite_message(self):
+        connection = get_connection(self.db_path)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            result = self.run_cli("known", "読む", "よむ")
+        finally:
+            connection.rollback()
+            connection.close()
+
+        self.assertNotEqual(result.returncode, 0)
+        error = self.payload(result)["error"]
+        self.assertEqual(error["type"], "database_busy")
+        self.assertIn("message", error)
+        self.assertTrue(error["message"])
+        self.assertNotIn("locked", error["message"].lower())
 
 
 if __name__ == "__main__":
