@@ -600,7 +600,7 @@ def test_report_contains_stable_review_columns_and_unicode(self):
         rows = list(csv.DictReader(source))
     self.assertEqual(report["row_count"], len(rows))
     self.assertEqual(rows[0]["score_kind"], "ranking_heuristic")
-    self.assertIn("理由", rows[0]["word"] + rows[0]["reasons"])
+    self.assertIsInstance(json.loads(rows[0]["reasons"]), list)
 ```
 
 CSV uses UTF-8 BOM for spreadsheet compatibility. Serialize components/reasons as
