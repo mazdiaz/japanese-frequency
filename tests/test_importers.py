@@ -8,6 +8,7 @@ import zipfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from japanese_frequency.database import get_connection
 from japanese_frequency.errors import DatabaseError, SourceFormatError
@@ -136,6 +137,59 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(metadata["entry_count"], 1)
         self.assertEqual(metadata["sha256"], digest)
         self.assertIn("minimum ranks", metadata["notes"])
+
+    def test_jpdb_hash_matches_parsed_snapshot_when_source_changes(self):
+        original = (
+            "term\treading\tfrequency\tkana_frequency\n読む\tよむ\t312\t\n"
+        ).encode()
+        replacement = (
+            "term\treading\tfrequency\tkana_frequency\n見る\tみる\t1\t\n"
+        ).encode()
+        source = self.directory / "changing.tsv"
+        source.write_bytes(original)
+        original_open = Path.open
+        mutated = False
+
+        class MutatingReader:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+
+            def __enter__(self):
+                self.wrapped.__enter__()
+                return self
+
+            def __exit__(self, *arguments):
+                return self.wrapped.__exit__(*arguments)
+
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+
+            def read(self, size=-1):
+                nonlocal mutated
+                chunk = self.wrapped.read(size)
+                if chunk == b"" and not mutated:
+                    with original_open(source, "wb") as output:
+                        output.write(replacement)
+                    mutated = True
+                return chunk
+
+        def open_with_mutation(path, mode="r", *arguments, **keywords):
+            opened = original_open(path, mode, *arguments, **keywords)
+            if path == source and mode == "rb":
+                return MutatingReader(opened)
+            return opened
+
+        with patch.object(Path, "open", new=open_with_mutation):
+            result = import_jpdb(source, db_path=self.db_path, now=self.clock)
+
+        self.assertTrue(mutated)
+        self.assertEqual(source.read_bytes(), replacement)
+        self.assertEqual(result["sha256"], hashlib.sha256(original).hexdigest())
+        with closing(get_connection(self.db_path)) as connection:
+            words = connection.execute(
+                "SELECT word FROM frequency WHERE source='jpdb'"
+            ).fetchall()
+        self.assertEqual([row["word"] for row in words], ["読む"])
 
     def test_malformed_jpdb_reimport_preserves_live_source_and_user_words(self):
         import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
@@ -319,6 +373,84 @@ class ImporterTests(unittest.TestCase):
                         output.writestr(member, content)
                 with self.assertRaises(SourceFormatError):
                     import_bccwj(archive, db_path=self.db_path, now=self.clock)
+
+    def test_bccwj_zip_member_errors_are_source_format_errors(self):
+        archive = self.directory / "BCCWJ_frequencylist_luw_ver1_0.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.write(self.valid_bccwj, "BCCWJ_frequencylist_luw_ver1_0.tsv")
+
+        for error in (
+            RuntimeError("encrypted member"),
+            NotImplementedError("unsupported compression"),
+            zipfile.BadZipFile("corrupt member"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(zipfile.ZipFile, "open", side_effect=error):
+                    with self.assertRaises(SourceFormatError) as context:
+                        import_bccwj(archive, db_path=self.db_path, now=self.clock)
+                self.assertEqual(context.exception.code, "source_format_error")
+
+    def test_bccwj_corrupt_zip_member_read_is_source_format_error(self):
+        archive = self.directory / "BCCWJ_frequencylist_luw_ver1_0.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as output:
+            output.write(self.valid_bccwj, "BCCWJ_frequencylist_luw_ver1_0.tsv")
+            member = output.infolist()[0]
+        data_offset = member.header_offset + 30 + len(member.filename) + len(member.extra)
+        with archive.open("r+b") as output:
+            output.seek(data_offset)
+            first_byte = output.read(1)
+            output.seek(data_offset)
+            output.write(bytes([first_byte[0] ^ 0xFF]))
+
+        with self.assertRaises(SourceFormatError) as context:
+            import_bccwj(archive, db_path=self.db_path, now=self.clock)
+
+        self.assertEqual(context.exception.code, "source_format_error")
+
+    def test_malformed_bccwj_reimport_preserves_all_live_state(self):
+        import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
+        import_bccwj(self.valid_bccwj, db_path=self.db_path, now=self.clock)
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO user_words(word, reading, known, notes) "
+                "VALUES ('読む', 'よむ', 1, 'keep')"
+            )
+            connection.commit()
+
+            def state():
+                return tuple(
+                    tuple(row)
+                    for table, order in (
+                        ("frequency", "source, word, reading"),
+                        ("source_metadata", "source"),
+                        ("user_words", "word, reading"),
+                    )
+                    for row in connection.execute(
+                        f"SELECT * FROM {table} ORDER BY {order}"
+                    )
+                )
+
+            before = state()
+
+        malformed = self.write(
+            "\t".join(reversed(BCCWJ_HEADER)) + "\n", name="malformed-bccwj.tsv"
+        )
+        with self.assertRaises(SourceFormatError):
+            import_bccwj(malformed, db_path=self.db_path, now=self.clock)
+
+        with closing(get_connection(self.db_path)) as connection:
+            after = tuple(
+                tuple(row)
+                for table, order in (
+                    ("frequency", "source, word, reading"),
+                    ("source_metadata", "source"),
+                    ("user_words", "word, reading"),
+                )
+                for row in connection.execute(
+                    f"SELECT * FROM {table} ORDER BY {order}"
+                )
+            )
+        self.assertEqual(after, before)
 
     def test_import_scripts_write_json_results(self):
         project = Path(__file__).parents[1]

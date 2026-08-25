@@ -3,6 +3,7 @@ import hashlib
 import io
 import math
 import sqlite3
+import tempfile
 import zipfile
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
@@ -87,12 +88,16 @@ def validate_header(actual, expected, source) -> None:
     )
 
 
-def sha256_file(path) -> str:
+@contextmanager
+def _snapshot_source(path):
     digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    with tempfile.TemporaryDirectory(prefix="japanese-frequency-") as directory:
+        snapshot = Path(directory) / f"source{path.suffix}"
+        with path.open("rb") as source, snapshot.open("wb") as output:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+                output.write(chunk)
+        yield snapshot, digest.hexdigest()
 
 
 def _timestamp(now) -> str:
@@ -192,7 +197,18 @@ def _replace_live_source(connection, source, metadata):
 def import_jpdb(path, *, db_path=None, version="2.2", now=None) -> dict:
     path = Path(path)
     initialize_database(db_path)
-    digest = sha256_file(path)
+    with _snapshot_source(path) as (snapshot, digest):
+        return _import_jpdb_snapshot(
+            snapshot,
+            filename=path.name,
+            digest=digest,
+            db_path=db_path,
+            version=version,
+            now=now,
+        )
+
+
+def _import_jpdb_snapshot(path, *, filename, digest, db_path, version, now):
     source_rows = 0
 
     try:
@@ -246,7 +262,7 @@ def import_jpdb(path, *, db_path=None, version="2.2", now=None) -> dict:
             metadata = {
                 "source": "jpdb",
                 "version": version,
-                "filename": path.name,
+                "filename": filename,
                 "imported_at": _timestamp(now),
                 "source_row_count": source_rows,
                 "entry_count": entry_count,
@@ -283,14 +299,25 @@ def _open_bccwj(path):
                     binary_file, encoding="utf-8-sig", newline=""
                 ) as source_file:
                     yield source_file
-    except zipfile.BadZipFile as error:
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
         raise SourceFormatError(f"bccwj ZIP could not be read: {error}") from error
 
 
 def import_bccwj(path, *, db_path=None, version="1.0", now=None) -> dict:
     path = Path(path)
     initialize_database(db_path)
-    digest = sha256_file(path)
+    with _snapshot_source(path) as (snapshot, digest):
+        return _import_bccwj_snapshot(
+            snapshot,
+            filename=path.name,
+            digest=digest,
+            db_path=db_path,
+            version=version,
+            now=now,
+        )
+
+
+def _import_bccwj_snapshot(path, *, filename, digest, db_path, version, now):
     source_rows = 0
 
     try:
@@ -366,7 +393,7 @@ def import_bccwj(path, *, db_path=None, version="1.0", now=None) -> dict:
             metadata = {
                 "source": "bccwj_luw",
                 "version": version,
-                "filename": path.name,
+                "filename": filename,
                 "imported_at": _timestamp(now),
                 "source_row_count": source_rows,
                 "entry_count": entry_count,
