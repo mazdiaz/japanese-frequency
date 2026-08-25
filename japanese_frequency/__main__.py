@@ -5,7 +5,14 @@ import sys
 
 from japanese_frequency.database import _database_error
 from japanese_frequency.errors import JapaneseFrequencyError
+from japanese_frequency.knowledge import import_migaku_known_words
 from japanese_frequency.lookup import lookup_frequency
+from japanese_frequency.media import import_media_vocabulary
+from japanese_frequency.mining import (
+    analyze_media,
+    export_media_analysis_csv,
+    recommend_media_word,
+)
 from japanese_frequency.user_words import (
     get_word_profile,
     mark_known,
@@ -28,7 +35,12 @@ def _error_object(error):
         "database_busy": "database is temporarily unavailable",
         "database_error": "database operation failed",
     }
-    return {"type": error.code, "message": safe_messages.get(error.code, str(error))}
+    result = {"type": error.code, "message": safe_messages.get(error.code, str(error))}
+    if error.code == "ambiguous_reading":
+        result["matches"] = sorted(
+            match for match in getattr(error, "matches", []) if isinstance(match, str)
+        )
+    return result
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
@@ -61,6 +73,30 @@ def _parser():
         _add_word_arguments(subparsers.add_parser(command))
     for command in ("known", "anki"):
         _add_word_arguments(subparsers.add_parser(command), boolean=True)
+
+    import_known = subparsers.add_parser("import-known")
+    import_known.add_argument("path")
+
+    import_media = subparsers.add_parser("import-media")
+    import_media.add_argument("path")
+    import_media.add_argument("--source-key", required=True)
+    import_media.add_argument("--name")
+
+    analyze = subparsers.add_parser("analyze-media")
+    analyze.add_argument("source_key")
+    analyze.add_argument("--limit", type=int)
+    analyze.add_argument("--output")
+
+    recommend = subparsers.add_parser("recommend-media")
+    recommend.add_argument("source_key")
+    _add_word_arguments(recommend)
+    for flag in (
+        "failed-recall",
+        "successful-inference",
+        "transparent-composition",
+        "personally-useful",
+    ):
+        recommend.add_argument(f"--{flag}", type=_boolean, default=False)
     return parser
 
 
@@ -84,10 +120,44 @@ def _run(arguments):
             arguments.value,
             db_path=arguments.db_path,
         )
-    return set_in_anki(
+    if arguments.command == "anki":
+        return set_in_anki(
+            arguments.word,
+            arguments.reading,
+            arguments.value,
+            db_path=arguments.db_path,
+        )
+    if arguments.command == "import-known":
+        return import_migaku_known_words(arguments.path, db_path=arguments.db_path)
+    if arguments.command == "import-media":
+        return import_media_vocabulary(
+            arguments.path,
+            arguments.source_key,
+            arguments.name,
+            db_path=arguments.db_path,
+        )
+    if arguments.command == "analyze-media":
+        analysis = analyze_media(
+            arguments.source_key,
+            limit=arguments.limit,
+            db_path=arguments.db_path,
+        )
+        if arguments.output is None:
+            return analysis
+        report = export_media_analysis_csv(analysis, arguments.output)
+        return {
+            "source": analysis["source"],
+            "summary": analysis["summary"],
+            "report": report,
+        }
+    return recommend_media_word(
+        arguments.source_key,
         arguments.word,
         arguments.reading,
-        arguments.value,
+        failed_recall=arguments.failed_recall,
+        successful_inference=arguments.successful_inference,
+        transparent_composition=arguments.transparent_composition,
+        personally_useful=arguments.personally_useful,
         db_path=arguments.db_path,
     )
 

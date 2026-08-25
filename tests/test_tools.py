@@ -10,9 +10,13 @@ from unittest.mock import patch
 from japanese_frequency.database import get_connection, initialize_database
 from japanese_frequency.errors import DatabaseBusyError, DatabaseError
 from japanese_frequency.tools import (
+    analyze_japanese_media,
     get_japanese_word_profile,
+    import_japanese_media_vocabulary,
+    import_migaku_known_vocabulary,
     lookup_japanese_frequency,
     mark_japanese_word_known,
+    recommend_japanese_media_word,
     record_japanese_encounter,
     set_japanese_word_anki_status,
 )
@@ -21,7 +25,18 @@ from japanese_frequency.tools import (
 class ToolTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
-        self.db_path = Path(self.temporary_directory.name) / "frequency.db"
+        self.root = Path(self.temporary_directory.name)
+        self.db_path = self.root / "frequency.db"
+        self.migaku_path = self.root / "known.txt"
+        self.media_path = self.root / "media.csv"
+        self.migaku_path.write_text("読む\n", encoding="utf-8")
+        self.media_path.write_text(
+            "Word,ReadingKana,Occurences\n"
+            "読む,よむ,5\n"
+            "開く,ひらく,2\n"
+            "開く,あく,3\n",
+            encoding="utf-8",
+        )
         initialize_database(self.db_path)
         with closing(get_connection(self.db_path)) as connection:
             connection.executemany(
@@ -41,6 +56,16 @@ class ToolTests(unittest.TestCase):
             lambda: record_japanese_encounter("読む", "よむ", db_path=self.db_path),
             lambda: mark_japanese_word_known("読む", "よむ", False, db_path=self.db_path),
             lambda: set_japanese_word_anki_status("読む", "よむ", False, db_path=self.db_path),
+            lambda: import_migaku_known_vocabulary(
+                self.migaku_path, db_path=self.db_path
+            ),
+            lambda: import_japanese_media_vocabulary(
+                self.media_path, "media", db_path=self.db_path
+            ),
+            lambda: analyze_japanese_media("media", db_path=self.db_path),
+            lambda: recommend_japanese_media_word(
+                "media", "読む", "よむ", db_path=self.db_path
+            ),
         )
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -65,6 +90,20 @@ class ToolTests(unittest.TestCase):
                 self.assertEqual(set(response), {"ok", "result"})
                 self.assertIs(response["ok"], True)
                 self.assertIsInstance(response["result"], dict)
+
+    def test_ambiguous_tool_error_contains_sorted_safe_matches(self):
+        import_japanese_media_vocabulary(
+            self.media_path, "media", db_path=self.db_path
+        )
+
+        response = recommend_japanese_media_word(
+            "media", "開く", db_path=self.db_path
+        )
+
+        self.assertEqual(set(response), {"ok", "error"})
+        self.assertIs(response["ok"], False)
+        self.assertEqual(response["error"]["type"], "ambiguous_reading")
+        self.assertEqual(response["error"]["matches"], ["あく", "ひらく"])
 
     def test_invalid_and_ambiguous_inputs_use_stable_failure_envelopes(self):
         responses = (
