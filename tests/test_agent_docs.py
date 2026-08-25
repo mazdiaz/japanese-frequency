@@ -4,18 +4,29 @@ from pathlib import Path
 
 from japanese_frequency import (
     analyze_media,
+    classify_jpdb_rank,
     export_media_analysis_csv,
     get_known_spelling,
     get_media_source,
+    get_word_profile,
     import_media_vocabulary,
     import_migaku_known_words,
+    lookup_frequency,
+    mark_known,
+    record_encounter,
     recommend_media_word,
+    set_in_anki,
 )
 from japanese_frequency.tools import (
     analyze_japanese_media,
+    get_japanese_word_profile,
     import_japanese_media_vocabulary,
     import_migaku_known_vocabulary,
+    lookup_japanese_frequency,
+    mark_japanese_word_known,
     recommend_japanese_media_word,
+    record_japanese_encounter,
+    set_japanese_word_anki_status,
 )
 
 
@@ -26,7 +37,7 @@ def _section(text, heading):
 
 
 class AgentDocumentationTests(unittest.TestCase):
-    def test_agent_guide_documents_exact_mining_api_and_wrapper_signatures(self):
+    def test_agent_guide_documents_exact_exported_api_and_wrapper_signatures(self):
         text = Path("AGENTS.md").read_text(encoding="utf-8")
         section = _section(text, "## Public Interfaces")
         functions = (
@@ -41,6 +52,17 @@ class AgentDocumentationTests(unittest.TestCase):
             import_japanese_media_vocabulary,
             analyze_japanese_media,
             recommend_japanese_media_word,
+            lookup_frequency,
+            classify_jpdb_rank,
+            get_word_profile,
+            record_encounter,
+            mark_known,
+            set_in_anki,
+            lookup_japanese_frequency,
+            get_japanese_word_profile,
+            record_japanese_encounter,
+            mark_japanese_word_known,
+            set_japanese_word_anki_status,
         )
         for function in functions:
             with self.subTest(function=function.__name__):

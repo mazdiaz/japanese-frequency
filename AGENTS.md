@@ -125,6 +125,15 @@ CLI forms. CLI values must be lowercase `true` or `false`.
 
 ## Public Interfaces
 
+Exact existing lookup/state API signatures exported from `japanese_frequency`:
+
+- `lookup_frequency(word: str, reading: str | None = None, *, db_path=None) -> dict`
+- `classify_jpdb_rank(rank: int) -> dict`
+- `get_word_profile(word, reading=None, *, db_path=None) -> dict`
+- `record_encounter(word, reading=None, *, db_path=None, now=None) -> dict`
+- `mark_known(word, reading=None, known=True, *, db_path=None) -> dict`
+- `set_in_anki(word, reading=None, in_anki=True, *, db_path=None) -> dict`
+
 Exact mining domain API signatures exported from `japanese_frequency`:
 
 - `get_known_spelling(word, *, connection=None, db_path=None) -> dict`
@@ -146,9 +155,13 @@ Exact mining agent wrapper signatures in `japanese_frequency.tools`:
 - `analyze_japanese_media(source_key, *, limit=None, db_path=None)`
 - `recommend_japanese_media_word(source_key, word, reading=None, *, failed_recall=False, successful_inference=False, transparent_composition=False, personally_useful=False, db_path=None)`
 
-Other stable lookup/state wrappers remain `lookup_japanese_frequency`,
-`get_japanese_word_profile`, `record_japanese_encounter`,
-`mark_japanese_word_known`, and `set_japanese_word_anki_status`.
+Exact stable lookup/state wrapper signatures in `japanese_frequency.tools`:
+
+- `lookup_japanese_frequency(word, reading=None, *, db_path=None)`
+- `get_japanese_word_profile(word, reading=None, *, db_path=None)`
+- `record_japanese_encounter(word, reading=None, *, db_path=None)`
+- `mark_japanese_word_known(word, reading=None, known=True, *, db_path=None)`
+- `set_japanese_word_anki_status(word, reading=None, in_anki=True, *, db_path=None)`
 
 ## CLI Contract
 
