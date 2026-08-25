@@ -102,6 +102,18 @@ class MediaTests(unittest.TestCase):
                 )
             )
 
+    def cleanup_failure(self):
+        actual_temporary_directory = tempfile.TemporaryDirectory()
+
+        class CleanupFailure:
+            name = actual_temporary_directory.name
+
+            def cleanup(self):
+                actual_temporary_directory.cleanup()
+                raise OSError("cleanup failed")
+
+        return CleanupFailure()
+
     def find(self, records, word, reading=None):
         return next(
             record
@@ -273,6 +285,44 @@ class MediaTests(unittest.TestCase):
                 db_path=self.db_path,
             )
 
+        self.assertEqual(self.full_state_snapshot(), before)
+
+    def test_snapshot_cleanup_failure_preserves_all_live_state(self):
+        import_media_vocabulary(
+            self.write_csv("before.csv", [row("語", "ご", 1)]),
+            "media",
+            db_path=self.db_path,
+            now=self.clock,
+        )
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO user_words(word, reading, known, notes) "
+                "VALUES ('語', 'ご', 1, 'keep')"
+            )
+            connection.execute(
+                "INSERT INTO frequency(word, reading, source, rank) "
+                "VALUES ('語', 'ご', 'manual', 1)"
+            )
+            connection.execute("INSERT INTO known_spellings VALUES ('語', 'manual')")
+            connection.commit()
+        before = self.full_state_snapshot()
+
+        with patch(
+            "japanese_frequency.source_files.tempfile.TemporaryDirectory",
+            return_value=self.cleanup_failure(),
+        ):
+            with self.assertRaises(SourceFormatError) as error:
+                import_media_vocabulary(
+                    self.write_csv("after.csv", [row("見る", "みる", 2)]),
+                    "media",
+                    "Changed",
+                    db_path=self.db_path,
+                    now=self.clock,
+                )
+
+        self.assertEqual(
+            str(error.exception), "source snapshot cleanup failed: cleanup failed"
+        )
         self.assertEqual(self.full_state_snapshot(), before)
 
     def test_source_key_and_display_name_are_validated(self):

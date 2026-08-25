@@ -65,13 +65,13 @@ def import_media_vocabulary(
                 "sha256": digest,
                 "notes": notes,
             }
-            media_id = _publish_media(connection, metadata)
-            return {
-                "id": media_id,
-                **metadata,
-                "exact_entry_count": exact_count,
-                "spelling_entry_count": spelling_count,
-            }
+        media_id = _publish_media(connection, metadata)
+        return {
+            "id": media_id,
+            **metadata,
+            "exact_entry_count": exact_count,
+            "spelling_entry_count": spelling_count,
+        }
     except sqlite3.Error as error:
         raise _database_error(error) from error
     finally:
