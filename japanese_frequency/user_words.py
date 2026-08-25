@@ -38,8 +38,11 @@ def _resolve_mutation_reading(connection, word, reading) -> str:
     if len(rows) == 1:
         return rows[0]["reading"]
     if len(rows) > 1:
-        readings = ", ".join(row["reading"] for row in rows)
-        raise AmbiguousReadingError(f"multiple corpus readings: {readings}")
+        matches = [row["reading"] for row in rows]
+        readings = ", ".join(matches)
+        raise AmbiguousReadingError(
+            f"multiple corpus readings: {readings}", matches=matches
+        )
     return ""
 
 

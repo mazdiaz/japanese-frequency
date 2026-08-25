@@ -1,9 +1,19 @@
+import csv
+import json
+import os
 import sqlite3
+import tempfile
 from contextlib import closing
+from pathlib import Path
 
 import config
 from japanese_frequency.database import _database_error, get_connection
-from japanese_frequency.errors import InvalidInputError
+from japanese_frequency.errors import (
+    AmbiguousReadingError,
+    InvalidInputError,
+    MediaNotFoundError,
+    SourceFormatError,
+)
 from japanese_frequency.media import get_media_source, iter_media_candidates
 
 
@@ -15,6 +25,24 @@ _MEDIA_FIELDS = (
     "dictionary_id",
 )
 _TIER_ORDER = {"mine": 0, "review": 1, "skip": 2}
+_REPORT_FIELDS = (
+    "tier",
+    "score",
+    "score_kind",
+    "score_components",
+    "reasons",
+    "word",
+    "reading",
+    "identity_type",
+    "occurrences",
+    "media_rank",
+    "known_spelling",
+    "known_identity",
+    "in_anki",
+    "encounters",
+    "jpdb_rank",
+    "bccwj_rank",
+)
 _MEDIA_WORDS_CTE = """
 WITH media_vocabulary(word) AS (
     SELECT word FROM media_words WHERE media_id = ?
@@ -336,3 +364,154 @@ def analyze_media(source_key, *, limit=None, db_path=None) -> dict:
         },
         "candidates": grouped,
     }
+
+
+def recommend_media_word(
+    source_key,
+    word,
+    reading=None,
+    *,
+    failed_recall=False,
+    successful_inference=False,
+    transparent_composition=False,
+    personally_useful=False,
+    db_path=None,
+) -> dict:
+    if not isinstance(word, str) or not word.strip():
+        raise InvalidInputError("word must be a nonempty string")
+    if reading is not None and (
+        not isinstance(reading, str) or not reading.strip()
+    ):
+        raise InvalidInputError("reading must be a nonempty string or null")
+    context = {
+        "failed_recall": failed_recall,
+        "successful_inference": successful_inference,
+        "transparent_composition": transparent_composition,
+        "personally_useful": personally_useful,
+    }
+    for name, value in context.items():
+        if not isinstance(value, bool):
+            raise InvalidInputError(f"{name} must be a boolean")
+
+    analysis = analyze_media(source_key, db_path=db_path)
+    candidates = [
+        candidate
+        for tier in ("mine", "review", "skip")
+        for candidate in analysis["candidates"][tier]
+        if candidate["word"] == word
+    ]
+    if reading is not None:
+        matches = [
+            candidate for candidate in candidates if candidate["reading"] == reading
+        ]
+    else:
+        exact = [
+            candidate for candidate in candidates if candidate["identity_type"] == "exact"
+        ]
+        if len(exact) > 1:
+            matches = sorted(candidate["reading"] for candidate in exact)
+            raise AmbiguousReadingError(
+                f"multiple media readings: {matches}", matches=matches
+            )
+        matches = exact or [
+            candidate
+            for candidate in candidates
+            if candidate["identity_type"] == "spelling"
+        ]
+    if len(matches) != 1:
+        identity = word if reading is None else f"{word} [{reading}]"
+        raise MediaNotFoundError(f"media word not found: {identity}")
+
+    result = dict(matches[0])
+    context_reasons = sorted(name for name, enabled in context.items() if enabled)
+    context_score = sum(config.CONTEXT_SCORE[name] for name in context_reasons)
+    contextual_score = result["score"] + context_score
+    personal = result["personal"]
+    if personal["in_anki"] is True:
+        contextual_tier = "skip"
+    elif personal["known_identity"] is True:
+        contextual_tier = "review" if failed_recall else "skip"
+    elif contextual_score >= config.MINING_MINE_SCORE:
+        contextual_tier = "mine"
+    else:
+        contextual_tier = "review"
+    result.update(
+        {
+            "default_tier": result["tier"],
+            "contextual_tier": contextual_tier,
+            "default_score": result["score"],
+            "context_score": context_score,
+            "contextual_score": contextual_score,
+            "context": context,
+            "context_reasons": context_reasons,
+        }
+    )
+    return result
+
+
+def _report_row(candidate):
+    personal = candidate["personal"]
+    frequency = candidate["frequency"]
+    return {
+        "tier": candidate["tier"],
+        "score": candidate["score"],
+        "score_kind": candidate["score_kind"],
+        "score_components": json.dumps(
+            candidate["score_components"], ensure_ascii=False, separators=(",", ":")
+        ),
+        "reasons": json.dumps(
+            candidate["reasons"], ensure_ascii=False, separators=(",", ":")
+        ),
+        "word": candidate["word"],
+        "reading": candidate["reading"],
+        "identity_type": candidate["identity_type"],
+        "occurrences": candidate["media"]["occurrences"],
+        "media_rank": candidate["media"]["media_rank"],
+        "known_spelling": personal["known_spelling"],
+        "known_identity": personal["known_identity"],
+        "in_anki": personal["in_anki"],
+        "encounters": personal["encounter_count"],
+        "jpdb_rank": frequency.get("jpdb", {}).get("rank"),
+        "bccwj_rank": frequency.get("bccwj_luw", {}).get("rank"),
+    }
+
+
+def export_media_analysis_csv(analysis, output_path) -> dict:
+    destination = Path(output_path)
+    rows = [
+        _report_row(candidate)
+        for tier in ("mine", "review", "skip")
+        for candidate in analysis["candidates"][tier]
+    ]
+    part = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8-sig",
+            newline="",
+            dir=destination.parent,
+            prefix=f"{destination.name}.",
+            suffix=".part",
+            delete=False,
+        ) as output:
+            part = Path(output.name)
+            writer = csv.DictWriter(output, fieldnames=_REPORT_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+            output.flush()
+        try:
+            os.replace(part, destination)
+        except OSError:
+            if part.exists() or not destination.exists():
+                raise
+        return {"output_path": str(destination), "row_count": len(rows)}
+    except (OSError, UnicodeError, csv.Error) as error:
+        if part is not None:
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise SourceFormatError(
+            f"media analysis report could not be written: {error}"
+        ) from error

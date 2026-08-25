@@ -23,6 +23,7 @@ data/*.db*
 *.part
 
 # Opt-in integration outputs
+reports/
 integration-output/
 tests/integration-output/
 data/integration-*

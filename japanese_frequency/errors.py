@@ -21,6 +21,10 @@ class MediaNotFoundError(NotFoundError):
 class AmbiguousReadingError(JapaneseFrequencyError):
     code = "ambiguous_reading"
 
+    def __init__(self, message, *, matches=None):
+        super().__init__(message)
+        self.matches = sorted(matches) if matches is not None else []
+
 
 class SourceFormatError(JapaneseFrequencyError):
     code = "source_format_error"
