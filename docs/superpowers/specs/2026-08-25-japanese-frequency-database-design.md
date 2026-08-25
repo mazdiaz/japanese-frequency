@@ -245,8 +245,9 @@ lookup_frequency(word: str, reading: str | None = None) -> dict
 With a reading, returns the precise normalized identity and available source
 records. Without a reading, returns every matching reading identity. Multiple
 readings are never collapsed or arbitrarily selected. Results are ordered by
-best JPDB rank, then BCCWJ rank, then reading. Unknown words return
-`found: false`.
+JPDB rank ascending with NULL last, then BCCWJ rank ascending with NULL last,
+then reading ascending. SQL ordering uses explicit nullness terms rather than
+depending on SQLite's default NULL ordering. Unknown words return `found: false`.
 
 Source values always come from imported data. `kana_rank` is omitted when the
 JPDB row does not supply `kana_frequency`.
@@ -319,9 +320,10 @@ heuristics rather than official JPDB or linguistic classifications.
 - `set_japanese_word_anki_status`
 
 Wrappers accept simple strings and booleans, return JSON-serializable objects,
-perform no network calls, and print nothing. Successful responses contain
-`ok: true`. Expected failures contain `ok: false` and an error object with a
-stable machine-readable type and human-readable message.
+perform no network calls, and print nothing. Every successful response uses
+`{"ok": true, "result": {...}}`. Expected failures use
+`{"ok": false, "error": {"type": "...", "message": "..."}}` with a stable
+machine-readable type and human-readable message.
 
 Stable error types include:
 
@@ -399,7 +401,7 @@ real source data.
 Coverage includes:
 
 - Existing, unknown, precise, and word-only lookups.
-- Multiple-reading results and deterministic ordering.
+- Multiple-reading results and deterministic explicit NULL-last ordering.
 - NFC, whitespace, and reading kana normalization.
 - Preservation of exact word spellings.
 - Conditional JPDB `kana_rank` output.
