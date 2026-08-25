@@ -1,12 +1,10 @@
 import csv
-import hashlib
 import io
 import math
 import sqlite3
 import tempfile
 import zipfile
 from contextlib import closing, contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 from japanese_frequency.database import (
@@ -16,6 +14,8 @@ from japanese_frequency.database import (
 )
 from japanese_frequency.errors import InvalidInputError, SourceFormatError
 from japanese_frequency.normalization import normalize_reading, normalize_word
+from japanese_frequency.source_files import snapshot_source
+from japanese_frequency.timestamps import format_utc_timestamp
 
 
 JPDB_HEADER = ("term", "reading", "frequency", "kana_frequency")
@@ -90,45 +90,6 @@ def validate_header(actual, expected, source) -> None:
         f"{source} header mismatch: missing={missing}; "
         f"unexpected={unexpected}; reordered={reordered}; duplicates={duplicates}"
     )
-
-
-@contextmanager
-def _snapshot_source(path):
-    digest = hashlib.sha256()
-    try:
-        temporary_directory = tempfile.TemporaryDirectory(
-            prefix="japanese-frequency-"
-        )
-    except OSError as error:
-        raise SourceFormatError(f"source snapshot could not be created: {error}") from error
-    try:
-        directory = temporary_directory.name
-        snapshot = Path(directory) / f"source{path.suffix}"
-        try:
-            with path.open("rb") as source, snapshot.open("wb") as output:
-                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                    output.write(chunk)
-        except OSError as error:
-            raise SourceFormatError(f"source snapshot could not be read: {error}") from error
-        yield snapshot, digest.hexdigest()
-    except BaseException:
-        try:
-            temporary_directory.cleanup()
-        except BaseException:
-            pass
-        raise
-    try:
-        temporary_directory.cleanup()
-    except OSError as error:
-        raise SourceFormatError(f"source snapshot cleanup failed: {error}") from error
-
-
-def _timestamp(now) -> str:
-    value = now() if now is not None else datetime.now(timezone.utc)
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _positive_integer(value, source, row_number, field) -> int:
@@ -256,7 +217,7 @@ def import_jpdb(
 
 def _stage_jpdb(connection, path, *, version, now, expected_sha256=None):
     try:
-        with _snapshot_source(path) as (snapshot, digest):
+        with snapshot_source(path) as (snapshot, digest):
             if expected_sha256 and digest.lower() != expected_sha256.lower():
                 raise SourceFormatError("jpdb source checksum mismatch")
             return _stage_jpdb_snapshot(
@@ -319,7 +280,7 @@ def _stage_jpdb_snapshot(connection, path, *, filename, digest, version, now):
         "source": "jpdb",
         "version": version,
         "filename": filename,
-        "imported_at": _timestamp(now),
+        "imported_at": format_utc_timestamp(now),
         "source_row_count": source_rows,
         "entry_count": entry_count,
         "sha256": digest,
@@ -381,7 +342,7 @@ def import_bccwj(
 
 def _stage_bccwj(connection, path, *, version, now, expected_sha256=None):
     try:
-        with _snapshot_source(path) as (snapshot, digest):
+        with snapshot_source(path) as (snapshot, digest):
             if expected_sha256 and digest.lower() != expected_sha256.lower():
                 raise SourceFormatError("bccwj source checksum mismatch")
             return _stage_bccwj_snapshot(
@@ -465,7 +426,7 @@ def _stage_bccwj_snapshot(connection, path, *, filename, digest, version, now):
         "source": "bccwj_luw",
         "version": version,
         "filename": filename,
-        "imported_at": _timestamp(now),
+        "imported_at": format_utc_timestamp(now),
         "source_row_count": source_rows,
         "entry_count": entry_count,
         "sha256": digest,
