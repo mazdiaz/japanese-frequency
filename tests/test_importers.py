@@ -75,6 +75,38 @@ class ImporterTests(unittest.TestCase):
     def write_bccwj(self, rows, name="bccwj.tsv"):
         return self.write("\t".join(BCCWJ_HEADER) + "\n" + "\n".join(rows) + "\n", name)
 
+    def database_state(self):
+        with closing(get_connection(self.db_path)) as connection:
+            return tuple(
+                tuple(tuple(row) for row in connection.execute(query))
+                for query in (
+                    "SELECT * FROM frequency ORDER BY source, word, reading",
+                    "SELECT * FROM source_metadata ORDER BY source",
+                    "SELECT * FROM user_words ORDER BY word, reading",
+                )
+            )
+
+    def seed_live_state(self):
+        import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO user_words(word, reading, known, notes) "
+                "VALUES ('読む', 'よむ', 1, 'keep')"
+            )
+            connection.commit()
+
+    def cleanup_failure(self):
+        actual_temporary_directory = tempfile.TemporaryDirectory()
+
+        class CleanupFailure:
+            name = actual_temporary_directory.name
+
+            def cleanup(self):
+                actual_temporary_directory.cleanup()
+                raise OSError("cleanup failed")
+
+        return CleanupFailure()
+
     def test_validate_header_accepts_only_exact_order_and_details_mismatches(self):
         validate_header(JPDB_HEADER, JPDB_HEADER, "jpdb")
 
@@ -220,27 +252,15 @@ class ImporterTests(unittest.TestCase):
         self.assertIn("snapshot", str(error.exception))
 
     def test_snapshot_cleanup_failure_preserves_active_source_format_error(self):
+        self.seed_live_state()
+        before = self.database_state()
         malformed = self.write(
             "reading\tterm\tfrequency\tkana_frequency\nよむ\t読む\t1\t\n"
         )
-        actual_temporary_directory = tempfile.TemporaryDirectory()
-
-        class CleanupFailure:
-            name = actual_temporary_directory.name
-
-            def __enter__(self):
-                return self.name
-
-            def __exit__(self, *unused):
-                self.cleanup()
-
-            def cleanup(self):
-                actual_temporary_directory.cleanup()
-                raise OSError("cleanup failed")
 
         with patch(
             "japanese_frequency.importers.tempfile.TemporaryDirectory",
-            return_value=CleanupFailure(),
+            return_value=self.cleanup_failure(),
         ):
             with self.assertRaises(SourceFormatError) as error:
                 import_jpdb(malformed, db_path=self.db_path, now=self.clock)
@@ -251,34 +271,28 @@ class ImporterTests(unittest.TestCase):
             "jpdb header mismatch: missing=[]; unexpected=[]; "
             "reordered=['term', 'reading']; duplicates=[]",
         )
+        self.assertEqual(self.database_state(), before)
 
     def test_snapshot_cleanup_only_failure_is_typed_source_format_error(self):
-        actual_temporary_directory = tempfile.TemporaryDirectory()
-
-        class CleanupFailure:
-            name = actual_temporary_directory.name
-
-            def __enter__(self):
-                return self.name
-
-            def __exit__(self, *unused):
-                self.cleanup()
-
-            def cleanup(self):
-                actual_temporary_directory.cleanup()
-                raise OSError("cleanup failed")
+        self.seed_live_state()
+        before = self.database_state()
+        replacement = self.write(
+            "term\treading\tfrequency\tkana_frequency\n新しい\tあたらしい\t1\t\n",
+            name="replacement.tsv",
+        )
 
         with patch(
             "japanese_frequency.importers.tempfile.TemporaryDirectory",
-            return_value=CleanupFailure(),
+            return_value=self.cleanup_failure(),
         ):
             with self.assertRaises(SourceFormatError) as error:
-                import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
+                import_jpdb(replacement, db_path=self.db_path, now=self.clock)
 
         self.assertEqual(error.exception.code, "source_format_error")
         self.assertEqual(
             str(error.exception), "source snapshot cleanup failed: cleanup failed"
         )
+        self.assertEqual(self.database_state(), before)
 
     def test_malformed_jpdb_reimport_preserves_live_source_and_user_words(self):
         import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
