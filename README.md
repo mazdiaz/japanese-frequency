@@ -5,6 +5,8 @@ vocabulary tracking. SQLite stores replaceable corpus data and personal state in
 separate tables. Normal lookup and mutation operations use no network and do not
 read source files after setup.
 
+Operational and privacy rules for agents are in [AGENTS.md](AGENTS.md).
+
 ## Requirements
 
 - Python 3.11 or newer
@@ -151,7 +153,11 @@ lookup_japanese_frequency("   ")
 
 Other wrappers are `get_japanese_word_profile`,
 `record_japanese_encounter`, `mark_japanese_word_known`, and
-`set_japanese_word_anki_status`.
+`set_japanese_word_anki_status`. Mining wrappers are
+`import_migaku_known_vocabulary`, `import_japanese_media_vocabulary`,
+`analyze_japanese_media`, and `recommend_japanese_media_word`. Every wrapper
+returns either `{"ok": true, "result": {...}}` or
+`{"ok": false, "error": {...}}` and remains silent/offline.
 
 ## CLI
 
@@ -167,6 +173,49 @@ python -m japanese_frequency --db C:\data\frequency.db lookup 読む
 ```
 
 Domain and database failures produce a JSON `error` object and nonzero status.
+
+## Media Mining Workflow
+
+After initial corpus setup, import local Migaku and media exports. Generic
+PowerShell example:
+
+```powershell
+$env:MIGAKU_KNOWN_SOURCE='C:\local\imports\migaku_known_words_DATE.txt'
+$env:MEDIA_VOCAB_SOURCE='C:\local\imports\media\Volume 1.txt'
+python -m japanese_frequency import-known "$env:MIGAKU_KNOWN_SOURCE"
+python -m japanese_frequency import-media "$env:MEDIA_VOCAB_SOURCE" --source-key series-volume-1 --name "Volume 1"
+python -m japanese_frequency analyze-media series-volume-1 --limit 25
+python -m japanese_frequency analyze-media series-volume-1 --output reports\series-volume-1.csv
+python -m japanese_frequency recommend-media series-volume-1 WORD READING --failed-recall true
+```
+
+Use durable source keys such as `series-volume-1`; display names are labels and
+need not be unique. Importing same source key again replaces only that media
+snapshot after full validation. Migaku refresh replaces only prior Migaku
+known-spelling snapshot. Corpus and personal identity history remain intact.
+
+Media imports inspect extension. CSV requires `Word`, `ReadingKana`, and
+`Occurences` headers and may include extra columns. TXT contains unordered
+spellings without readings or ranks. When requested TXT has same-stem CSV,
+importer selects CSV and reports both `requested_filename` and
+`selected_filename`; otherwise it imports TXT directly. All inputs must be
+UTF-8.
+
+Without `--output`, analysis emits direct UTF-8 JSON containing source,
+summary, and tiered candidates. With `--output`, it writes UTF-8-with-BOM CSV
+and emits report metadata instead of candidate JSON. Use reports for large
+results.
+
+Scores are transparent ranking heuristics, not probabilities or language
+judgments. Frequency is one evidence source and must not be sole reason to mine
+or skip. Inspect `score_components`, `reasons`, media evidence,
+`known_spelling`, tri-state `known_identity`, and tri-state `in_anki`.
+
+Recommendation context accepts lowercase `true`/`false` values for
+`--failed-recall`, `--successful-inference`, `--transparent-composition`, and
+`--personally-useful`. Omit reading only when one identity is possible;
+ambiguous readings produce typed `ambiguous_reading` failure rather than a
+guessed reading.
 
 ## Updates And Backups
 
@@ -207,6 +256,10 @@ python -m unittest tests.test_real_sources.RealSourceTests.test_real_jpdb_import
 
 $env:BCCWJ_SOURCE='C:\corpora\BCCWJ_frequencylist_luw_ver1_0.zip'
 python -m unittest tests.test_real_sources.RealSourceTests.test_real_bccwj_import_and_lookup -v
+
+$env:MIGAKU_KNOWN_SOURCE='C:\local\imports\migaku_known_words_DATE.txt'
+$env:MEDIA_VOCAB_SOURCE='C:\local\imports\media\Volume 1.txt'
+python -m unittest tests.test_real_sources.RealSourceTests.test_real_migaku_and_media_workflow -v
 ```
 
 Unset environment variables leave these tests skipped during default discovery.

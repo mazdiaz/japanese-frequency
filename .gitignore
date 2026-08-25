@@ -20,6 +20,9 @@ dist/
 data/sources/*
 !data/sources/.gitkeep
 data/*.db*
+data/imports/migaku_known_words_*.txt
+data/imports/media/*.txt
+data/imports/media/*.csv
 *.part
 
 # Opt-in integration outputs
