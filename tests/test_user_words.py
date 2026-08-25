@@ -390,11 +390,9 @@ class UserWordTests(unittest.TestCase):
         mutation_errors = []
         import_errors = []
 
-        import japanese_frequency.importers as importers
         import japanese_frequency.user_words as user_words
 
         original_resolve = user_words._resolve_mutation_reading
-        original_publish = importers._publish_staged_sources
 
         def pausing_resolve(connection, word, reading):
             result = original_resolve(connection, word, reading)
@@ -403,10 +401,6 @@ class UserWordTests(unittest.TestCase):
                 raise AssertionError("mutation release timed out")
             return result
 
-        def observed_publish(connection, staged_sources):
-            swap_attempted.set()
-            return original_publish(connection, staged_sources)
-
         def mutate():
             try:
                 mutation_results.append(mark_known("読む", db_path=self.db_path))
@@ -414,6 +408,7 @@ class UserWordTests(unittest.TestCase):
                 mutation_errors.append(error)
 
         def replace_source():
+            swap_attempted.set()
             try:
                 import_jpdb(replacement, db_path=self.db_path, now=self.clock)
             except Exception as error:
@@ -421,8 +416,6 @@ class UserWordTests(unittest.TestCase):
 
         with patch.object(
             user_words, "_resolve_mutation_reading", side_effect=pausing_resolve
-        ), patch.object(
-            importers, "_publish_staged_sources", side_effect=observed_publish
         ):
             mutation_thread = threading.Thread(target=mutate)
             import_thread = threading.Thread(target=replace_source)

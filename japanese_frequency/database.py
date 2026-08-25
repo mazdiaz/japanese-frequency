@@ -134,6 +134,17 @@ ALTER TABLE user_words_new RENAME TO user_words;
 """
 
 
+def _execute_statements(connection, script) -> None:
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise sqlite3.OperationalError("incomplete schema statement")
+
+
 def _database_error(error) -> DatabaseError:
     message = str(error)
     if isinstance(error, sqlite3.OperationalError) and (
@@ -166,24 +177,25 @@ def initialize_database(db_path=None) -> Path:
     path = Path(db_path or config.DEFAULT_DATABASE_PATH)
     try:
         with closing(get_connection(path)) as connection:
-            version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version >= SCHEMA_VERSION:
-                return path
-
-            user_columns = connection.execute(
-                "PRAGMA table_info(user_words)"
-            ).fetchall()
-            migrate_legacy_user_words = bool(user_columns) and any(
-                row["name"] == "known" and row["notnull"]
-                for row in user_columns
-            )
             try:
-                migration = "BEGIN IMMEDIATE;\n"
+                connection.execute("BEGIN IMMEDIATE")
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                if version >= SCHEMA_VERSION:
+                    connection.commit()
+                    return path
+
+                user_columns = connection.execute(
+                    "PRAGMA table_info(user_words)"
+                ).fetchall()
+                migrate_legacy_user_words = bool(user_columns) and any(
+                    row["name"] == "known" and row["notnull"]
+                    for row in user_columns
+                )
                 if migrate_legacy_user_words:
-                    migration += LEGACY_USER_MIGRATION
-                migration += SCHEMA
-                migration += f"PRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
-                connection.executescript(migration)
+                    _execute_statements(connection, LEGACY_USER_MIGRATION)
+                _execute_statements(connection, SCHEMA)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                connection.commit()
             except sqlite3.Error:
                 try:
                     connection.rollback()

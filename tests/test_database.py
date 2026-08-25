@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
+import japanese_frequency.database as database
 import japanese_frequency.errors as errors
 from japanese_frequency.database import get_connection, initialize_database, integrity_check
 from japanese_frequency.errors import (
@@ -123,6 +124,33 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(tuple(rows[0]), ("不明", None, None, 2, "note2"))
         self.assertEqual(tuple(rows[1]), ("既知", 1, 1, 4, "note"))
         self.assertEqual(version, 2)
+
+    def test_migration_inspects_version_and_schema_under_write_lock(self):
+        self.create_legacy_database()
+        statements = []
+
+        def tracked_connection(db_path):
+            connection = get_connection(db_path)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(database, "get_connection", side_effect=tracked_connection):
+            initialize_database(self.db_path)
+
+        normalized = [statement.strip().upper() for statement in statements]
+        begin_index = next(
+            index
+            for index, statement in enumerate(normalized)
+            if statement.startswith("BEGIN IMMEDIATE")
+        )
+        version_index = normalized.index("PRAGMA USER_VERSION")
+        schema_index = next(
+            index
+            for index, statement in enumerate(normalized)
+            if statement.startswith("PRAGMA TABLE_INFO(USER_WORDS)")
+        )
+        self.assertLess(begin_index, version_index)
+        self.assertLess(begin_index, schema_index)
 
     def test_new_schema_contains_knowledge_and_media_tables(self):
         initialize_database(self.db_path)
