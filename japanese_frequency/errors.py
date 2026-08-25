@@ -10,6 +10,14 @@ class NotFoundError(JapaneseFrequencyError):
     code = "not_found"
 
 
+class SourceNotFoundError(NotFoundError):
+    code = "source_not_found"
+
+
+class MediaNotFoundError(NotFoundError):
+    code = "media_not_found"
+
+
 class AmbiguousReadingError(JapaneseFrequencyError):
     code = "ambiguous_reading"
 

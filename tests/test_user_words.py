@@ -88,6 +88,56 @@ class UserWordTests(unittest.TestCase):
             )
             connection.commit()
 
+    def insert_known_spelling(self, word, source):
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO known_spellings(word, source) VALUES (?, ?)",
+                (word, source),
+            )
+            connection.commit()
+
+    def test_encounter_defaults_identity_and_anki_states_to_null(self):
+        result = record_encounter(
+            "読む", "よむ", db_path=self.db_path, now=self.clock
+        )
+
+        self.assertIsNone(result["user"]["known"])
+        self.assertIsNone(result["user"]["in_anki"])
+
+    def test_explicit_false_states_remain_false(self):
+        self.assertFalse(
+            mark_known("読む", "よむ", False, db_path=self.db_path)["user"]["known"]
+        )
+        self.assertFalse(
+            set_in_anki("読む", "よむ", False, db_path=self.db_path)["user"][
+                "in_anki"
+            ]
+        )
+
+    def test_profile_distinguishes_spelling_and_identity_knowledge(self):
+        self.insert_known_spelling("開く", "migaku")
+
+        result = get_word_profile("開く", "あく", db_path=self.db_path)
+
+        self.assertTrue(result["found"])
+        self.assertTrue(result["known_spelling"])
+        self.assertEqual(result["known_spelling_sources"], ["migaku"])
+        self.assertIsNone(result["known_identity"])
+        self.assertIn("in_anki", result)
+        self.assertIsNone(result["in_anki"])
+
+    def test_format_utc_timestamp_preserves_clock_and_utc_z_behavior(self):
+        spec = importlib.util.find_spec("japanese_frequency.timestamps")
+        self.assertIsNotNone(spec)
+        timestamps = importlib.import_module("japanese_frequency.timestamps")
+        offset_clock = lambda: datetime(
+            2026, 8, 25, 12, 55, 42, 987654, tzinfo=timezone(timedelta(hours=10))
+        )
+
+        self.assertEqual(
+            timestamps.format_utc_timestamp(offset_clock), "2026-08-25T02:55:42Z"
+        )
+
     def test_omitted_reading_resolves_single_corpus_identity(self):
         self.insert_frequency("読む", "よむ", "jpdb", 312)
 
@@ -275,6 +325,10 @@ class UserWordTests(unittest.TestCase):
                 "reading": "ふそんざい",
                 "frequency": {},
                 "user": {},
+                "known_spelling": False,
+                "known_spelling_sources": [],
+                "known_identity": None,
+                "in_anki": None,
             },
         )
 
@@ -300,7 +354,13 @@ class UserWordTests(unittest.TestCase):
     def test_word_only_profile_returns_empty_matches_for_unknown_word(self):
         self.assertEqual(
             get_word_profile("不存在", db_path=self.db_path),
-            {"found": False, "word": "不存在", "matches": []},
+            {
+                "found": False,
+                "word": "不存在",
+                "matches": [],
+                "known_spelling": False,
+                "known_spelling_sources": [],
+            },
         )
 
     def test_locked_mutation_translates_busy_error_without_partial_write(self):

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
+import japanese_frequency.errors as errors
 from japanese_frequency.database import get_connection, initialize_database, integrity_check
 from japanese_frequency.errors import (
     AmbiguousReadingError,
@@ -39,6 +40,12 @@ class ErrorTests(unittest.TestCase):
                 self.assertEqual(error.code, code)
                 self.assertEqual(str(error), "message")
 
+    def test_new_not_found_errors_have_stable_codes(self):
+        self.assertTrue(hasattr(errors, "SourceNotFoundError"))
+        self.assertTrue(hasattr(errors, "MediaNotFoundError"))
+        self.assertEqual(errors.SourceNotFoundError.code, "source_not_found")
+        self.assertEqual(errors.MediaNotFoundError.code, "media_not_found")
+
 
 class DatabaseTests(unittest.TestCase):
     def setUp(self):
@@ -47,6 +54,98 @@ class DatabaseTests(unittest.TestCase):
 
     def tearDown(self):
         self.temporary_directory.cleanup()
+
+    def create_legacy_database(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            with connection:
+                connection.executescript(
+                    """
+                CREATE TABLE frequency (
+                    word TEXT NOT NULL,
+                    reading TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL,
+                    rank INTEGER,
+                    frequency REAL,
+                    frequency_per_million REAL,
+                    kana_rank INTEGER,
+                    PRIMARY KEY (word, reading, source)
+                );
+                CREATE TABLE user_words (
+                    word TEXT NOT NULL,
+                    reading TEXT NOT NULL DEFAULT '',
+                    known INTEGER NOT NULL DEFAULT 0 CHECK (known IN (0, 1)),
+                    in_anki INTEGER NOT NULL DEFAULT 0 CHECK (in_anki IN (0, 1)),
+                    encounter_count INTEGER NOT NULL DEFAULT 0 CHECK (encounter_count >= 0),
+                    first_seen TEXT,
+                    last_seen TEXT,
+                    notes TEXT,
+                    PRIMARY KEY (word, reading)
+                );
+                CREATE TABLE source_metadata (
+                    source TEXT PRIMARY KEY,
+                    version TEXT,
+                    filename TEXT,
+                    imported_at TEXT,
+                    source_row_count INTEGER,
+                    entry_count INTEGER,
+                    sha256 TEXT,
+                    notes TEXT
+                );
+                CREATE INDEX idx_frequency_word ON frequency(word);
+                CREATE INDEX idx_frequency_word_reading ON frequency(word, reading);
+                CREATE INDEX idx_frequency_source_rank ON frequency(source, rank);
+                """
+                )
+
+    def test_existing_boolean_user_state_migrates_conservatively(self):
+        self.create_legacy_database()
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            with connection:
+                connection.execute(
+                    "INSERT INTO user_words VALUES (?,?,?,?,?,?,?,?)",
+                    ("既知", "きち", 1, 1, 4, "first", "last", "note"),
+                )
+                connection.execute(
+                    "INSERT INTO user_words VALUES (?,?,?,?,?,?,?,?)",
+                    ("不明", "ふめい", 0, 0, 2, "first2", "last2", "note2"),
+                )
+
+        initialize_database(self.db_path)
+        initialize_database(self.db_path)
+
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                "SELECT word, known, in_anki, encounter_count, notes "
+                "FROM user_words ORDER BY word"
+            ).fetchall()
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        self.assertEqual(tuple(rows[0]), ("不明", None, None, 2, "note2"))
+        self.assertEqual(tuple(rows[1]), ("既知", 1, 1, 4, "note"))
+        self.assertEqual(version, 2)
+
+    def test_new_schema_contains_knowledge_and_media_tables(self):
+        initialize_database(self.db_path)
+        with closing(get_connection(self.db_path)) as connection:
+            objects = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+                )
+            }
+        self.assertTrue(
+            {
+                "known_spellings",
+                "personal_source_metadata",
+                "media_sources",
+                "media_words",
+                "media_spellings",
+                "idx_known_spellings_word",
+                "idx_media_words_media_rank",
+                "idx_media_spellings_media_rank",
+            }
+            <= objects
+        )
 
     def test_initialize_creates_exact_schema_and_indexes(self):
         result = initialize_database(self.db_path)
@@ -111,8 +210,8 @@ class DatabaseTests(unittest.TestCase):
             [
                 ("word", "TEXT", 1, None, 1),
                 ("reading", "TEXT", 1, "''", 2),
-                ("known", "INTEGER", 1, "0", 0),
-                ("in_anki", "INTEGER", 1, "0", 0),
+                ("known", "INTEGER", 0, None, 0),
+                ("in_anki", "INTEGER", 0, None, 0),
                 ("encounter_count", "INTEGER", 1, "0", 0),
                 ("first_seen", "TEXT", 0, None, 0),
                 ("last_seen", "TEXT", 0, None, 0),
