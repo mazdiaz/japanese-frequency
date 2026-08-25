@@ -101,7 +101,8 @@ def _snapshot_source(path):
         )
     except OSError as error:
         raise SourceFormatError(f"source snapshot could not be created: {error}") from error
-    with temporary_directory as directory:
+    try:
+        directory = temporary_directory.name
         snapshot = Path(directory) / f"source{path.suffix}"
         try:
             with path.open("rb") as source, snapshot.open("wb") as output:
@@ -111,6 +112,16 @@ def _snapshot_source(path):
         except OSError as error:
             raise SourceFormatError(f"source snapshot could not be read: {error}") from error
         yield snapshot, digest.hexdigest()
+    except BaseException:
+        try:
+            temporary_directory.cleanup()
+        except BaseException:
+            pass
+        raise
+    try:
+        temporary_directory.cleanup()
+    except OSError as error:
+        raise SourceFormatError(f"source snapshot cleanup failed: {error}") from error
 
 
 def _timestamp(now) -> str:
@@ -211,8 +222,11 @@ def _publish_staged_sources(connection, staged_sources):
             )
             _upsert_metadata(connection, metadata)
         connection.commit()
-    except Exception:
-        connection.rollback()
+    except BaseException:
+        try:
+            connection.rollback()
+        except BaseException:
+            pass
         raise
 
 

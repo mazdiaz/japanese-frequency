@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -218,6 +219,67 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "source_format_error")
         self.assertIn("snapshot", str(error.exception))
 
+    def test_snapshot_cleanup_failure_preserves_active_source_format_error(self):
+        malformed = self.write(
+            "reading\tterm\tfrequency\tkana_frequency\nよむ\t読む\t1\t\n"
+        )
+        actual_temporary_directory = tempfile.TemporaryDirectory()
+
+        class CleanupFailure:
+            name = actual_temporary_directory.name
+
+            def __enter__(self):
+                return self.name
+
+            def __exit__(self, *unused):
+                self.cleanup()
+
+            def cleanup(self):
+                actual_temporary_directory.cleanup()
+                raise OSError("cleanup failed")
+
+        with patch(
+            "japanese_frequency.importers.tempfile.TemporaryDirectory",
+            return_value=CleanupFailure(),
+        ):
+            with self.assertRaises(SourceFormatError) as error:
+                import_jpdb(malformed, db_path=self.db_path, now=self.clock)
+
+        self.assertEqual(error.exception.code, "source_format_error")
+        self.assertEqual(
+            str(error.exception),
+            "jpdb header mismatch: missing=[]; unexpected=[]; "
+            "reordered=['term', 'reading']; duplicates=[]",
+        )
+
+    def test_snapshot_cleanup_only_failure_is_typed_source_format_error(self):
+        actual_temporary_directory = tempfile.TemporaryDirectory()
+
+        class CleanupFailure:
+            name = actual_temporary_directory.name
+
+            def __enter__(self):
+                return self.name
+
+            def __exit__(self, *unused):
+                self.cleanup()
+
+            def cleanup(self):
+                actual_temporary_directory.cleanup()
+                raise OSError("cleanup failed")
+
+        with patch(
+            "japanese_frequency.importers.tempfile.TemporaryDirectory",
+            return_value=CleanupFailure(),
+        ):
+            with self.assertRaises(SourceFormatError) as error:
+                import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
+
+        self.assertEqual(error.exception.code, "source_format_error")
+        self.assertEqual(
+            str(error.exception), "source snapshot cleanup failed: cleanup failed"
+        )
+
     def test_malformed_jpdb_reimport_preserves_live_source_and_user_words(self):
         import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
         with closing(get_connection(self.db_path)) as connection:
@@ -286,6 +348,67 @@ class ImporterTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual([row["word"] for row in words], ["見る", "読む"])
         self.assertEqual(metadata["filename"], "jpdb.tsv")
+
+    def test_publish_rollback_failure_preserves_original_database_error(self):
+        import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "CREATE TRIGGER reject_jpdb BEFORE INSERT ON frequency "
+                "WHEN NEW.source='jpdb' BEGIN SELECT RAISE(ABORT, 'rejected'); END"
+            )
+            before = tuple(
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT * FROM frequency ORDER BY source, word, reading"
+                )
+            )
+            metadata_before = tuple(
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT * FROM source_metadata ORDER BY source"
+                )
+            )
+            connection.commit()
+        replacement = self.write(
+            "term\treading\tfrequency\tkana_frequency\n新しい\tあたらしい\t1\t\n"
+        )
+        real_connection = get_connection(self.db_path)
+
+        class RollbackFailure:
+            def __getattr__(self, name):
+                return getattr(real_connection, name)
+
+            def rollback(self):
+                raise sqlite3.OperationalError("rollback failed")
+
+            def close(self):
+                real_connection.close()
+
+        with patch(
+            "japanese_frequency.importers.get_connection",
+            return_value=RollbackFailure(),
+        ):
+            with self.assertRaises(DatabaseError) as error:
+                import_jpdb(replacement, db_path=self.db_path, now=self.clock)
+
+        self.assertEqual(type(error.exception), DatabaseError)
+        self.assertEqual(error.exception.code, "database_error")
+        self.assertEqual(str(error.exception), "rejected")
+        with closing(get_connection(self.db_path)) as connection:
+            after = tuple(
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT * FROM frequency ORDER BY source, word, reading"
+                )
+            )
+            metadata_after = tuple(
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT * FROM source_metadata ORDER BY source"
+                )
+            )
+        self.assertEqual(after, before)
+        self.assertEqual(metadata_after, metadata_before)
 
     def test_bccwj_aggregates_and_assigns_deterministic_sequential_rank(self):
         source = self.write_bccwj(
