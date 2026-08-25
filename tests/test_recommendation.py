@@ -103,17 +103,36 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "ambiguous_reading")
         json.dumps(error.exception.matches)
 
-    def test_exact_media_includes_alternate_corpus_identity_in_ambiguity(self):
-        self.seed_exact("開く", "あく")
+    def test_exact_media_keeps_bulk_evidence_separate_from_corpus_ambiguity(self):
+        self.seed_exact("開く", "あく", occurrences=7, media_rank=3)
         self.execute(
-            "INSERT INTO frequency(word, reading, source) VALUES (?, ?, ?)",
-            ("開く", "ひらく", "jpdb"),
+            "INSERT INTO frequency(word, reading, source, rank) VALUES (?, ?, ?, ?)",
+            ("開く", "ひらく", "jpdb", 99),
+        )
+
+        analysis = analyze_media("media", db_path=self.db_path)
+        candidates = [
+            candidate
+            for tier in ("mine", "review", "skip")
+            for candidate in analysis["candidates"][tier]
+        ]
+
+        self.assertEqual(
+            [(candidate["word"], candidate["reading"]) for candidate in candidates],
+            [("開く", "あく")],
         )
 
         with self.assertRaises(AmbiguousReadingError) as error:
             recommend_media_word("media", "開く", db_path=self.db_path)
 
         self.assertEqual(error.exception.matches, ["あく", "ひらく"])
+
+        result = recommend_media_word(
+            "media", "開く", "あく", db_path=self.db_path
+        )
+        self.assertEqual(result["media"]["occurrences"], 7)
+        self.assertEqual(result["media"]["media_rank"], 3)
+        self.assertEqual(result["frequency"], {})
 
     def test_recommendation_normalizes_word_and_reading(self):
         self.seed_exact("がく", "がく")

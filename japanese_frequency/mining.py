@@ -263,13 +263,12 @@ def _build_candidates(media_rows, frequencies, users, known_spellings):
         for row in media_rows
         if row["identity_type"] == "spelling"
     }
-    exact_media_by_word = {}
-    for identity, row in exact_media.items():
-        exact_media_by_word.setdefault(identity[0], row)
-    media_words = set(exact_media_by_word) | set(spelling_media)
+    exact_words = {word for word, _ in exact_media}
     identities = set(exact_media)
     identities.update(
-        identity for identity in frequencies if identity[0] in media_words
+        identity
+        for identity in frequencies
+        if identity[0] in spelling_media and identity[0] not in exact_words
     )
 
     candidates = []
@@ -277,7 +276,7 @@ def _build_candidates(media_rows, frequencies, users, known_spellings):
         word, reading = identity
         exact_row = exact_media.get(identity)
         spelling_row = spelling_media.get(word)
-        source_row = exact_row or spelling_row or exact_media_by_word[word]
+        source_row = exact_row or spelling_row
         media = _media_evidence(source_row)
         if spelling_row is not None:
             media["spelling"] = _media_evidence(spelling_row)
@@ -410,14 +409,17 @@ def recommend_media_word(
             candidate for candidate in candidates if candidate["reading"] == reading
         ]
     else:
+        resolution_readings = _recommendation_readings(
+            analysis["source"]["id"], word, db_path
+        )
+        if len(resolution_readings) > 1:
+            raise AmbiguousReadingError(
+                f"multiple media/corpus readings: {resolution_readings}",
+                matches=resolution_readings,
+            )
         exact = [
             candidate for candidate in candidates if candidate["identity_type"] == "exact"
         ]
-        if len(exact) > 1:
-            matches = sorted(candidate["reading"] for candidate in exact)
-            raise AmbiguousReadingError(
-                f"multiple media readings: {matches}", matches=matches
-            )
         matches = exact or [
             candidate
             for candidate in candidates
@@ -452,6 +454,31 @@ def recommend_media_word(
         }
     )
     return result
+
+
+def _recommendation_readings(media_id, word, db_path):
+    try:
+        with closing(get_connection(db_path)) as connection:
+            rows = connection.execute(
+                """
+                WITH media_word(word) AS (
+                    SELECT word FROM media_words WHERE media_id=? AND word=?
+                    UNION
+                    SELECT word FROM media_spellings WHERE media_id=? AND word=?
+                )
+                SELECT reading FROM media_words
+                WHERE media_id=? AND word=?
+                UNION
+                SELECT frequency.reading FROM frequency
+                JOIN media_word ON media_word.word=frequency.word
+                WHERE frequency.word=? AND frequency.reading <> ''
+                ORDER BY reading
+                """,
+                (media_id, word, media_id, word, media_id, word, word),
+            ).fetchall()
+    except sqlite3.Error as error:
+        raise _database_error(error) from error
+    return [row["reading"] for row in rows]
 
 
 def _report_row(candidate):
