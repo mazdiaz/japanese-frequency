@@ -91,12 +91,21 @@ def validate_header(actual, expected, source) -> None:
 @contextmanager
 def _snapshot_source(path):
     digest = hashlib.sha256()
-    with tempfile.TemporaryDirectory(prefix="japanese-frequency-") as directory:
+    try:
+        temporary_directory = tempfile.TemporaryDirectory(
+            prefix="japanese-frequency-"
+        )
+    except OSError as error:
+        raise SourceFormatError(f"source snapshot could not be created: {error}") from error
+    with temporary_directory as directory:
         snapshot = Path(directory) / f"source{path.suffix}"
-        with path.open("rb") as source, snapshot.open("wb") as output:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-                output.write(chunk)
+        try:
+            with path.open("rb") as source, snapshot.open("wb") as output:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    output.write(chunk)
+        except OSError as error:
+            raise SourceFormatError(f"source snapshot could not be read: {error}") from error
         yield snapshot, digest.hexdigest()
 
 
@@ -194,10 +203,14 @@ def _replace_live_source(connection, source, metadata):
     connection.commit()
 
 
-def import_jpdb(path, *, db_path=None, version="2.2", now=None) -> dict:
+def import_jpdb(
+    path, *, db_path=None, version="2.2", now=None, expected_sha256=None
+) -> dict:
     path = Path(path)
     initialize_database(db_path)
     with _snapshot_source(path) as (snapshot, digest):
+        if expected_sha256 and digest.lower() != expected_sha256.lower():
+            raise SourceFormatError("jpdb source checksum mismatch")
         return _import_jpdb_snapshot(
             snapshot,
             filename=path.name,
@@ -271,6 +284,8 @@ def _import_jpdb_snapshot(path, *, filename, digest, db_path, version, now):
             }
             _replace_live_source(connection, "jpdb", metadata)
             return metadata
+    except OSError as error:
+        raise SourceFormatError(f"jpdb source could not be read: {error}") from error
     except sqlite3.Error as error:
         raise _database_error(error) from error
 
@@ -303,10 +318,14 @@ def _open_bccwj(path):
         raise SourceFormatError(f"bccwj ZIP could not be read: {error}") from error
 
 
-def import_bccwj(path, *, db_path=None, version="1.0", now=None) -> dict:
+def import_bccwj(
+    path, *, db_path=None, version="1.0", now=None, expected_sha256=None
+) -> dict:
     path = Path(path)
     initialize_database(db_path)
     with _snapshot_source(path) as (snapshot, digest):
+        if expected_sha256 and digest.lower() != expected_sha256.lower():
+            raise SourceFormatError("bccwj source checksum mismatch")
         return _import_bccwj_snapshot(
             snapshot,
             filename=path.name,
@@ -409,5 +428,7 @@ def _import_bccwj_snapshot(path, *, filename, digest, db_path, version, now):
             }
             _replace_live_source(connection, "bccwj_luw", metadata)
             return metadata
+    except OSError as error:
+        raise SourceFormatError(f"bccwj source could not be read: {error}") from error
     except sqlite3.Error as error:
         raise _database_error(error) from error

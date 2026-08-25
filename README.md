@@ -7,7 +7,7 @@ read source files after setup.
 
 ## Requirements
 
-- Python 3.10 or newer
+- Python 3.11 or newer
 - No third-party runtime packages
 
 `requirements.txt` is intentionally empty.
@@ -33,11 +33,15 @@ python setup_database.py --jpdb-source C:\corpora\jpdb.tsv --db C:\data\frequenc
 python setup_database.py --jpdb-source C:\corpora\jpdb.tsv --with-bccwj --bccwj-source C:\corpora\BCCWJ_frequencylist_luw_ver1_0.zip
 ```
 
+Explicit setup source paths are pinned-version inputs and must match SHA-256
+values listed below. To import a custom source version intentionally, use
+`scripts/import_jpdb.py` or `scripts/import_bccwj.py` directly.
+
 Setup prints JSON containing `jpdb_entries`, `bccwj_entries`, resolved
 `database_path`, `database_size_bytes`, and explicit `integrity_check` result.
 JPDB is mandatory. BCCWJ is imported only with `--with-bccwj`. Download or
 import failure for any requested source is fatal and returns a nonzero exit
-status. Downloads use a same-directory `.part` file, verify pinned SHA-256
+status. Downloads use unique same-directory files ending in `.part`, verify pinned SHA-256
 checksums, then atomically replace the final source file.
 
 ## Pinned Sources

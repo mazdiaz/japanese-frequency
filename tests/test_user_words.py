@@ -1,6 +1,8 @@
 import importlib
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -13,6 +15,7 @@ from japanese_frequency.errors import (
     DatabaseBusyError,
     InvalidInputError,
 )
+from japanese_frequency.importers import import_jpdb
 from japanese_frequency.user_words import (
     get_word_profile,
     mark_known,
@@ -312,6 +315,81 @@ class UserWordTests(unittest.TestCase):
         finally:
             first.rollback()
             first.close()
+
+    def test_omitted_reading_mutation_blocks_source_swap_until_commit(self):
+        self.insert_frequency("読む", "よむ", "jpdb", 312)
+        replacement = Path(self.temporary_directory.name) / "replacement.tsv"
+        replacement.write_text(
+            "term\treading\tfrequency\tkana_frequency\n読む\tどくむ\t1\t\n",
+            encoding="utf-8",
+        )
+        resolved = threading.Event()
+        release = threading.Event()
+        swap_attempted = threading.Event()
+        mutation_results = []
+        mutation_errors = []
+        import_errors = []
+
+        import japanese_frequency.importers as importers
+        import japanese_frequency.user_words as user_words
+
+        original_resolve = user_words._resolve_mutation_reading
+        original_swap = importers._replace_live_source
+
+        def pausing_resolve(connection, word, reading):
+            result = original_resolve(connection, word, reading)
+            resolved.set()
+            if not release.wait(2):
+                raise AssertionError("mutation release timed out")
+            return result
+
+        def observed_swap(connection, source, metadata):
+            swap_attempted.set()
+            return original_swap(connection, source, metadata)
+
+        def mutate():
+            try:
+                mutation_results.append(mark_known("読む", db_path=self.db_path))
+            except Exception as error:
+                mutation_errors.append(error)
+
+        def replace_source():
+            try:
+                import_jpdb(replacement, db_path=self.db_path, now=self.clock)
+            except Exception as error:
+                import_errors.append(error)
+
+        with patch.object(
+            user_words, "_resolve_mutation_reading", side_effect=pausing_resolve
+        ), patch.object(importers, "_replace_live_source", side_effect=observed_swap):
+            mutation_thread = threading.Thread(target=mutate)
+            import_thread = threading.Thread(target=replace_source)
+            mutation_thread.start()
+            self.assertTrue(resolved.wait(2))
+            import_thread.start()
+            try:
+                self.assertTrue(swap_attempted.wait(2))
+                time.sleep(0.05)
+                self.assertTrue(import_thread.is_alive())
+            finally:
+                release.set()
+                mutation_thread.join(2)
+                import_thread.join(2)
+
+        self.assertFalse(mutation_thread.is_alive())
+        self.assertFalse(import_thread.is_alive())
+        self.assertEqual(mutation_errors, [])
+        self.assertEqual(import_errors, [])
+        self.assertEqual(mutation_results[0]["reading"], "よむ")
+        with closing(get_connection(self.db_path)) as connection:
+            user_reading = connection.execute(
+                "SELECT reading FROM user_words WHERE word='読む'"
+            ).fetchone()[0]
+            corpus_reading = connection.execute(
+                "SELECT reading FROM frequency WHERE word='読む' AND source='jpdb'"
+            ).fetchone()[0]
+        self.assertEqual(user_reading, "よむ")
+        self.assertEqual(corpus_reading, "どくむ")
 
 
 if __name__ == "__main__":

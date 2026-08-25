@@ -191,6 +191,33 @@ class ImporterTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([row["word"] for row in words], ["読む"])
 
+    def test_missing_import_sources_are_typed_format_errors(self):
+        missing = self.directory / "missing-source"
+        for importer, suffix in ((import_jpdb, ".tsv"), (import_bccwj, ".zip")):
+            with self.subTest(importer=importer.__name__):
+                with self.assertRaises(SourceFormatError) as error:
+                    importer(
+                        missing.with_suffix(suffix),
+                        db_path=self.db_path,
+                        now=self.clock,
+                    )
+                self.assertEqual(error.exception.code, "source_format_error")
+
+    def test_snapshot_write_oserror_is_typed_format_error(self):
+        original_open = Path.open
+
+        def fail_snapshot_write(path, mode="r", *arguments, **keywords):
+            if mode == "wb" and path.parent != self.directory:
+                raise OSError("snapshot disk unavailable")
+            return original_open(path, mode, *arguments, **keywords)
+
+        with patch.object(Path, "open", new=fail_snapshot_write):
+            with self.assertRaises(SourceFormatError) as error:
+                import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
+
+        self.assertEqual(error.exception.code, "source_format_error")
+        self.assertIn("snapshot", str(error.exception))
+
     def test_malformed_jpdb_reimport_preserves_live_source_and_user_words(self):
         import_jpdb(self.valid_jpdb, db_path=self.db_path, now=self.clock)
         with closing(get_connection(self.db_path)) as connection:

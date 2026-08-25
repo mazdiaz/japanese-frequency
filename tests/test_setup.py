@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -51,6 +51,8 @@ class SetupTests(unittest.TestCase):
         self.valid_bccwj.write_text(
             header + "\n" + "\t".join(values) + "\n", encoding="utf-8"
         )
+        self.jpdb_hash = hashlib.sha256(self.valid_jpdb.read_bytes()).hexdigest()
+        self.bccwj_hash = hashlib.sha256(self.valid_bccwj.read_bytes()).hexdigest()
         self.clock = lambda: datetime(2026, 8, 25, 2, 55, tzinfo=timezone.utc)
 
     def tearDown(self):
@@ -68,6 +70,28 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result, destination)
         self.assertEqual(destination.read_bytes(), b"data")
         self.assertFalse(Path(f"{destination}.part").exists())
+
+    def test_download_uses_unique_same_directory_part_names(self):
+        destination = self.root / "source.tsv"
+        observed = []
+
+        class ObservingResponse(Response):
+            def read(self, size=-1):
+                observed.extend(path.name for path in self_root.glob("*.part"))
+                return super().read(size)
+
+        self_root = self.root
+        for payload in (b"first", b"second"):
+            download_source(
+                "https://example.invalid/source",
+                destination,
+                opener=lambda url, payload=payload: ObservingResponse(payload),
+            )
+
+        self.assertEqual(len(set(observed)), 2)
+        self.assertTrue(all(name.startswith("source.tsv.") for name in observed))
+        self.assertTrue(all(name.endswith(".part") for name in observed))
+        self.assertEqual(list(self.root.glob("*.part")), [])
 
     def test_failed_download_cleans_part_without_replacing_existing_file(self):
         destination = self.root / "source.tsv"
@@ -101,7 +125,10 @@ class SetupTests(unittest.TestCase):
 
     def test_setup_reports_counts_resolved_path_size_and_integrity(self):
         report = setup_database(
-            db_path=self.db_path, jpdb_source=self.valid_jpdb, now=self.clock
+            db_path=self.db_path,
+            jpdb_source=self.valid_jpdb,
+            jpdb_sha256=self.jpdb_hash,
+            now=self.clock,
         )
 
         self.assertEqual(report["integrity_check"], "ok")
@@ -116,6 +143,8 @@ class SetupTests(unittest.TestCase):
             jpdb_source=self.valid_jpdb,
             with_bccwj=True,
             bccwj_source=self.valid_bccwj,
+            jpdb_sha256=self.jpdb_hash,
+            bccwj_sha256=self.bccwj_hash,
             now=self.clock,
         )
         self.assertGreater(report["bccwj_entries"], 0)
@@ -124,10 +153,86 @@ class SetupTests(unittest.TestCase):
             setup_database(
                 db_path=self.root / "jpdb-only.db",
                 jpdb_source=self.valid_jpdb,
+                jpdb_sha256=self.jpdb_hash,
                 bccwj_source=self.valid_bccwj,
                 now=self.clock,
             )
         importer.assert_not_called()
+
+    def test_jpdb_only_rerun_reports_preserved_bccwj_count(self):
+        initial = setup_database(
+            db_path=self.db_path,
+            jpdb_source=self.valid_jpdb,
+            with_bccwj=True,
+            bccwj_source=self.valid_bccwj,
+            jpdb_sha256=self.jpdb_hash,
+            bccwj_sha256=self.bccwj_hash,
+            now=self.clock,
+        )
+
+        rerun = setup_database(
+            db_path=self.db_path,
+            jpdb_source=self.valid_jpdb,
+            jpdb_sha256=self.jpdb_hash,
+            now=self.clock,
+        )
+
+        self.assertEqual(rerun["bccwj_entries"], initial["bccwj_entries"])
+        self.assertGreater(rerun["bccwj_entries"], 0)
+
+    def test_explicit_pinned_source_checksum_mismatch_preserves_live_data(self):
+        setup_database(
+            db_path=self.db_path,
+            jpdb_source=self.valid_jpdb,
+            with_bccwj=True,
+            bccwj_source=self.valid_bccwj,
+            jpdb_sha256=self.jpdb_hash,
+            bccwj_sha256=self.bccwj_hash,
+            now=self.clock,
+        )
+
+        def state():
+            import sqlite3
+
+            with closing(sqlite3.connect(self.db_path)) as connection:
+                return tuple(
+                    connection.execute(
+                        f"SELECT * FROM {table} ORDER BY {order}"
+                    ).fetchall()
+                    for table, order in (
+                        ("frequency", "source, word, reading"),
+                        ("source_metadata", "source"),
+                    )
+                )
+
+        before = state()
+        replacement_jpdb = self.root / "replacement-jpdb.tsv"
+        replacement_jpdb.write_text(
+            "term\treading\tfrequency\tkana_frequency\n新しい\tあたらしい\t1\t\n",
+            encoding="utf-8",
+        )
+        replacement_hash = hashlib.sha256(replacement_jpdb.read_bytes()).hexdigest()
+
+        cases = (
+            {
+                "jpdb_source": replacement_jpdb,
+                "jpdb_sha256": "0" * 64,
+            },
+            {
+                "jpdb_source": replacement_jpdb,
+                "jpdb_sha256": replacement_hash,
+                "with_bccwj": True,
+                "bccwj_source": self.valid_bccwj,
+                "bccwj_sha256": "0" * 64,
+            },
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(SourceFormatError) as error:
+                    setup_database(db_path=self.db_path, now=self.clock, **arguments)
+                self.assertEqual(error.exception.code, "source_format_error")
+                self.assertIn("checksum mismatch", str(error.exception))
+                self.assertEqual(state(), before)
 
     def test_requested_bccwj_failure_is_fatal(self):
         malformed = self.root / "bad-bccwj.tsv"
@@ -139,6 +244,8 @@ class SetupTests(unittest.TestCase):
                 jpdb_source=self.valid_jpdb,
                 with_bccwj=True,
                 bccwj_source=malformed,
+                jpdb_sha256=self.jpdb_hash,
+                bccwj_sha256=hashlib.sha256(malformed.read_bytes()).hexdigest(),
                 now=self.clock,
             )
 
@@ -150,7 +257,15 @@ class SetupTests(unittest.TestCase):
             source = self.valid_jpdb if url == JPDB_URL else self.valid_bccwj
             return source
 
-        with patch("japanese_frequency.setup.download_source", side_effect=fake_download):
+        with patch(
+            "japanese_frequency.setup.download_source", side_effect=fake_download
+        ), patch(
+            "japanese_frequency.setup.import_jpdb",
+            return_value={"entry_count": 2},
+        ), patch(
+            "japanese_frequency.setup.import_bccwj",
+            return_value={"entry_count": 1},
+        ):
             setup_database(
                 db_path=self.db_path, with_bccwj=True, now=self.clock
             )
@@ -192,6 +307,22 @@ class SetupTests(unittest.TestCase):
             {"error": {"type": "download_error", "message": "failed"}},
         )
 
+    def test_cli_missing_explicit_source_emits_typed_json(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            result = setup_cli.main(
+                [
+                    "--db",
+                    str(self.db_path),
+                    "--jpdb-source",
+                    str(self.root / "missing.tsv"),
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["error"]["type"], "source_format_error")
+
     def test_cli_reconfigures_stdout_for_unicode_report_paths(self):
         report = {"database_path": "C:\\文档\\frequency.db"}
         output = io.BytesIO()
@@ -210,9 +341,14 @@ class SetupTests(unittest.TestCase):
         with zipfile.ZipFile(archive, "w") as output:
             output.writestr("文档.tsv", "wrong")
         project = Path(__file__).parents[1]
+        jpdb_hash = hashlib.sha256(self.valid_jpdb.read_bytes()).hexdigest()
+        bccwj_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
         command = (
             "import sys; "
             "sys.stderr.reconfigure(encoding='cp1252', errors='strict'); "
+            "import japanese_frequency.setup as frequency_setup; "
+            f"frequency_setup.JPDB_SHA256={jpdb_hash!r}; "
+            f"frequency_setup.BCCWJ_SHA256={bccwj_hash!r}; "
             "import setup_database; "
             "raise SystemExit(setup_database.main(sys.argv[1:]))"
         )

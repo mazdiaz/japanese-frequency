@@ -1,11 +1,14 @@
 import hashlib
+import os
 import shutil
+import tempfile
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 
 import config
-from japanese_frequency.database import initialize_database, integrity_check
-from japanese_frequency.errors import DownloadError
+from japanese_frequency.database import get_connection, initialize_database, integrity_check
+from japanese_frequency.errors import DownloadError, SourceFormatError
 from japanese_frequency.importers import import_bccwj, import_jpdb
 
 
@@ -37,58 +40,106 @@ def sha256_file(path) -> str:
 
 def download_source(url, destination, *, expected_sha256=None, opener=None) -> Path:
     destination = Path(destination)
-    part = Path(f"{destination}.part")
+    part = None
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with (opener or urllib.request.urlopen)(url) as response, part.open(
-            "wb"
-        ) as output:
-            shutil.copyfileobj(response, output)
+        with (opener or urllib.request.urlopen)(url) as response:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=destination.parent,
+                prefix=f"{destination.name}.",
+                suffix=".part",
+                delete=False,
+            ) as output:
+                part = Path(output.name)
+                shutil.copyfileobj(response, output)
         actual_sha256 = sha256_file(part)
         if expected_sha256 and actual_sha256.lower() != expected_sha256.lower():
             raise DownloadError("download checksum mismatch")
-        part.replace(destination)
+        os.replace(part, destination)
         return destination
     except Exception as error:
-        part.unlink(missing_ok=True)
+        if part is not None:
+            part.unlink(missing_ok=True)
         if isinstance(error, DownloadError):
             raise
         raise DownloadError("source download failed") from error
 
 
+def _verify_pinned_source(path, expected_sha256, source) -> Path:
+    path = Path(path)
+    try:
+        actual_sha256 = sha256_file(path)
+    except OSError as error:
+        raise SourceFormatError(f"{source} source could not be read: {error}") from error
+    if actual_sha256.lower() != expected_sha256.lower():
+        raise SourceFormatError(f"{source} source checksum mismatch")
+    return path
+
+
 def setup_database(
-    *, db_path=None, jpdb_source=None, with_bccwj=False, bccwj_source=None, now=None
+    *,
+    db_path=None,
+    jpdb_source=None,
+    with_bccwj=False,
+    bccwj_source=None,
+    now=None,
+    jpdb_sha256=None,
+    bccwj_sha256=None,
 ) -> dict:
     database_path = Path(db_path or config.DEFAULT_DATABASE_PATH).expanduser().resolve()
     sources_path = database_path.parent / "sources"
     sources_path.mkdir(parents=True, exist_ok=True)
-    initialize_database(database_path)
+    expected_jpdb_sha256 = jpdb_sha256 or JPDB_SHA256
+    expected_bccwj_sha256 = bccwj_sha256 or BCCWJ_SHA256
 
+    explicit_jpdb = jpdb_source is not None
     if jpdb_source is None:
         jpdb_source = download_source(
             JPDB_URL,
             sources_path / JPDB_FILENAME,
-            expected_sha256=JPDB_SHA256,
+            expected_sha256=expected_jpdb_sha256,
         )
+    if explicit_jpdb:
+        jpdb_source = _verify_pinned_source(
+            jpdb_source, expected_jpdb_sha256, "jpdb"
+        )
+
+    explicit_bccwj = bccwj_source is not None
+    if with_bccwj and bccwj_source is None:
+        bccwj_source = download_source(
+            BCCWJ_URL,
+            sources_path / BCCWJ_FILENAME,
+            expected_sha256=expected_bccwj_sha256,
+        )
+    if with_bccwj and explicit_bccwj:
+        bccwj_source = _verify_pinned_source(
+            bccwj_source, expected_bccwj_sha256, "bccwj"
+        )
+
+    initialize_database(database_path)
     jpdb_metadata = import_jpdb(
-        jpdb_source, db_path=database_path, version=JPDB_VERSION, now=now
+        jpdb_source,
+        db_path=database_path,
+        version=JPDB_VERSION,
+        now=now,
+        expected_sha256=expected_jpdb_sha256,
     )
 
-    bccwj_entries = 0
     if with_bccwj:
-        if bccwj_source is None:
-            bccwj_source = download_source(
-                BCCWJ_URL,
-                sources_path / BCCWJ_FILENAME,
-                expected_sha256=BCCWJ_SHA256,
-            )
         bccwj_metadata = import_bccwj(
             bccwj_source,
             db_path=database_path,
             version=BCCWJ_VERSION,
             now=now,
+            expected_sha256=expected_bccwj_sha256,
         )
         bccwj_entries = bccwj_metadata["entry_count"]
+    else:
+        with closing(get_connection(database_path)) as connection:
+            bccwj_entries = connection.execute(
+                "SELECT COUNT(*) FROM frequency WHERE source = 'bccwj_luw'"
+            ).fetchone()[0]
 
     return {
         "jpdb_entries": jpdb_metadata["entry_count"],

@@ -59,6 +59,7 @@ def _mutate(word, reading, sql, parameters, *, db_path) -> dict:
     try:
         with closing(get_connection(db_path)) as connection:
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
                 normalized_reading = _resolve_mutation_reading(
                     connection, normalized_word, reading
                 )
