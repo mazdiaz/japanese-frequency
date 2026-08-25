@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -17,6 +18,7 @@ from japanese_frequency.errors import (
     NotFoundError,
     SourceFormatError,
 )
+from japanese_frequency.user_words import mark_known
 
 
 class ErrorTests(unittest.TestCase):
@@ -183,6 +185,40 @@ class DatabaseTests(unittest.TestCase):
             with self.assertRaises(DatabaseBusyError) as context:
                 get_connection(self.db_path)
         self.assertEqual(context.exception.code, "database_busy")
+
+    def test_locked_mutation_times_out_without_partial_write(self):
+        initialize_database(self.db_path)
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO frequency(word, reading, source, rank) "
+                "VALUES ('読む', 'よむ', 'jpdb', 1)"
+            )
+            connection.commit()
+
+        first = get_connection(self.db_path)
+        first.execute("BEGIN IMMEDIATE")
+        before = [
+            tuple(row)
+            for row in first.execute("SELECT * FROM user_words ORDER BY word, reading")
+        ]
+        started = time.monotonic()
+        try:
+            with self.assertRaises(DatabaseBusyError) as error:
+                mark_known("読む", "よむ", db_path=self.db_path)
+            elapsed = time.monotonic() - started
+            self.assertEqual(error.exception.code, "database_busy")
+            self.assertGreaterEqual(elapsed, config.SQLITE_BUSY_TIMEOUT_MS / 1000 * 0.8)
+            self.assertLess(elapsed, config.SQLITE_BUSY_TIMEOUT_MS / 1000 + 1.0)
+            after = [
+                tuple(row)
+                for row in first.execute(
+                    "SELECT * FROM user_words ORDER BY word, reading"
+                )
+            ]
+            self.assertEqual(after, before)
+        finally:
+            first.rollback()
+            first.close()
 
 
 if __name__ == "__main__":
