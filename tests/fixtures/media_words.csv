@@ -1,0 +1,5 @@
+Word,ReadingKana,Occurences,Definitions,ExampleSentence,JmDictWordId,Ignored
+読む,よむ,5,read,本を読む。,1,x
+読む,ヨム,2,read later,声に出して読む。,1,y
+固有名,,8,name,固有名です。,2,z
+見る,みる,8,see,映画を見る。,3,q
