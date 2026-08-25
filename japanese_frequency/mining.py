@@ -500,11 +500,7 @@ def export_media_analysis_csv(analysis, output_path) -> dict:
             writer.writeheader()
             writer.writerows(rows)
             output.flush()
-        try:
-            os.replace(part, destination)
-        except OSError:
-            if part.exists() or not destination.exists():
-                raise
+        os.replace(part, destination)
         return {"output_path": str(destination), "row_count": len(rows)}
     except (OSError, UnicodeError, csv.Error) as error:
         if part is not None:

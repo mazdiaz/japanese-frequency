@@ -258,22 +258,25 @@ class RecommendationTests(unittest.TestCase):
         self.assertIn("読む".encode(), observed["bytes"])
         self.assertFalse(observed["source"].exists())
 
-    def test_replace_success_is_not_reported_as_failure_if_wrapper_raises(self):
+    def test_replace_failure_is_typed_and_preserves_existing_destination(self):
         self.seed_exact("読む", "よむ")
         analysis = analyze_media("media", db_path=self.db_path)
-        real_replace = os.replace
+        self.output.parent.mkdir(parents=True)
+        self.output.write_text("stale report", encoding="utf-8")
 
-        def replace_then_raise(source, destination):
-            real_replace(source, destination)
-            raise OSError("wrapper failed after replace")
+        def remove_part_then_fail(source, destination):
+            Path(source).unlink()
+            raise PermissionError("replace denied")
 
         with patch(
-            "japanese_frequency.mining.os.replace", side_effect=replace_then_raise
+            "japanese_frequency.mining.os.replace", side_effect=remove_part_then_fail
         ):
-            report = export_media_analysis_csv(analysis, self.output)
+            with self.assertRaises(SourceFormatError) as error:
+                export_media_analysis_csv(analysis, self.output)
 
-        self.assertEqual(report["row_count"], 1)
-        self.assertTrue(self.output.exists())
+        self.assertIsInstance(error.exception.__cause__, PermissionError)
+        self.assertIn("replace denied", str(error.exception.__cause__))
+        self.assertEqual(self.output.read_text(encoding="utf-8"), "stale report")
 
     def test_report_cleanup_preserves_primary_io_error(self):
         self.seed_exact("読む", "よむ")
