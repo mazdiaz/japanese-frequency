@@ -119,6 +119,22 @@ Pass `db_path=...` to any call to use a non-default database. Omitted readings
 resolve only when one corpus identity exists. Ambiguous mutations fail without
 changing personal state.
 
+`classify_jpdb_rank(rank)` returns the positive integer rank and a project
+commonness category using these inclusive thresholds:
+
+| JPDB rank | Category |
+| --- | --- |
+| 1-1,000 | `extremely_common` |
+| 1,001-3,000 | `very_common` |
+| 3,001-10,000 | `common` |
+| 10,001-20,000 | `moderately_common` |
+| 20,001-40,000 | `uncommon` |
+| 40,001-70,000 | `rare` |
+| 70,001 and above | `very_rare` |
+
+These labels are user-facing project heuristics. They are not official JPDB
+categories and do not represent linguistic classes.
+
 ## Agent Tools
 
 `japanese_frequency.tools` provides stable JSON-style envelopes:
@@ -154,11 +170,14 @@ Domain and database failures produce a JSON `error` object and nonzero status.
 
 ## Updates And Backups
 
-Source imports validate complete input in connection-local staging tables, then
-replace only requested corpus source in a short transaction. Failed validation
-or lock acquisition preserves live corpus rows, unrelated sources, and
-`user_words`. A configured SQLite busy timeout maps lock failures to stable
-`database_busy` errors.
+Source imports validate complete input in connection-local TEMP staging tables,
+then replace only requested corpus sources in a short transaction. Setup stages
+all requested sources first and publishes their corpus rows and metadata in one
+transaction. Failed download, validation, staging, publication, or lock
+acquisition preserves all existing corpus rows, source metadata, and
+`user_words`. Standalone import scripts retain source-scoped replacement. A
+configured SQLite busy timeout maps lock failures to stable `database_busy`
+errors.
 
 Before replacing or moving a database, stop writers and back up database plus
 any `-wal` and `-shm` sidecars, or use SQLite backup API. Re-running setup or

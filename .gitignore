@@ -26,3 +26,4 @@ data/*.db*
 integration-output/
 tests/integration-output/
 data/integration-*
+final-fix-2-report.md

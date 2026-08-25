@@ -105,6 +105,25 @@ class ToolTests(unittest.TestCase):
                 self.assertTrue(response["error"]["message"])
                 self.assertNotIn("private_frequency_schema", response["error"]["message"])
 
+    def test_database_parent_path_conflict_uses_tool_error_envelope(self):
+        conflict = self.db_path.parent / "conflict"
+        conflict.write_text("not a directory", encoding="utf-8")
+
+        response = lookup_japanese_frequency(
+            "読む", db_path=conflict / "frequency.db"
+        )
+
+        self.assertEqual(
+            response,
+            {
+                "ok": False,
+                "error": {
+                    "type": "database_error",
+                    "message": "database operation failed",
+                },
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

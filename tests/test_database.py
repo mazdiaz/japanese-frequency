@@ -177,6 +177,25 @@ class DatabaseTests(unittest.TestCase):
             get_connection(directory_path)
         self.assertEqual(context.exception.code, "database_error")
 
+    def test_database_api_translates_parent_path_conflicts(self):
+        conflict = Path(self.temporary_directory.name) / "conflict"
+        conflict.write_text("not a directory", encoding="utf-8")
+        database_path = conflict / "frequency.db"
+
+        for operation in (get_connection, initialize_database):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaises(DatabaseError) as context:
+                    operation(database_path)
+                self.assertEqual(context.exception.code, "database_error")
+
+    def test_database_api_translates_parent_mkdir_oserror(self):
+        for operation in (get_connection, initialize_database):
+            with self.subTest(operation=operation.__name__):
+                with patch.object(Path, "mkdir", side_effect=OSError("denied")):
+                    with self.assertRaises(DatabaseError) as context:
+                        operation(self.db_path)
+                self.assertEqual(context.exception.code, "database_error")
+
     def test_database_api_translates_locked_errors(self):
         with patch(
             "japanese_frequency.database.sqlite3.connect",

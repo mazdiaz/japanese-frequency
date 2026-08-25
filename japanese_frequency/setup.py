@@ -1,15 +1,27 @@
 import hashlib
 import os
 import shutil
+import sqlite3
 import tempfile
 import urllib.request
 from contextlib import closing
 from pathlib import Path
 
 import config
-from japanese_frequency.database import get_connection, initialize_database, integrity_check
-from japanese_frequency.errors import DownloadError, SourceFormatError
-from japanese_frequency.importers import import_bccwj, import_jpdb
+from japanese_frequency.database import (
+    _database_error,
+    get_connection,
+    initialize_database,
+    integrity_check,
+)
+from japanese_frequency.errors import DatabaseError, DownloadError, SourceFormatError
+from japanese_frequency.importers import (
+    _BCCWJ_STAGE,
+    _JPDB_STAGE,
+    _publish_staged_sources,
+    _stage_bccwj,
+    _stage_jpdb,
+)
 
 
 JPDB_VERSION = "2.2"
@@ -41,8 +53,8 @@ def sha256_file(path) -> str:
 def download_source(url, destination, *, expected_sha256=None, opener=None) -> Path:
     destination = Path(destination)
     part = None
-    destination.parent.mkdir(parents=True, exist_ok=True)
     try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
         with (opener or urllib.request.urlopen)(url) as response:
             with tempfile.NamedTemporaryFile(
                 mode="wb",
@@ -53,6 +65,7 @@ def download_source(url, destination, *, expected_sha256=None, opener=None) -> P
             ) as output:
                 part = Path(output.name)
                 shutil.copyfileobj(response, output)
+                output.flush()
         actual_sha256 = sha256_file(part)
         if expected_sha256 and actual_sha256.lower() != expected_sha256.lower():
             raise DownloadError("download checksum mismatch")
@@ -60,7 +73,10 @@ def download_source(url, destination, *, expected_sha256=None, opener=None) -> P
         return destination
     except Exception as error:
         if part is not None:
-            part.unlink(missing_ok=True)
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
         if isinstance(error, DownloadError):
             raise
         raise DownloadError("source download failed") from error
@@ -87,9 +103,11 @@ def setup_database(
     jpdb_sha256=None,
     bccwj_sha256=None,
 ) -> dict:
-    database_path = Path(db_path or config.DEFAULT_DATABASE_PATH).expanduser().resolve()
+    try:
+        database_path = Path(db_path or config.DEFAULT_DATABASE_PATH).expanduser().resolve()
+    except OSError as error:
+        raise DatabaseError(str(error)) from error
     sources_path = database_path.parent / "sources"
-    sources_path.mkdir(parents=True, exist_ok=True)
     expected_jpdb_sha256 = jpdb_sha256 or JPDB_SHA256
     expected_bccwj_sha256 = bccwj_sha256 or BCCWJ_SHA256
 
@@ -118,33 +136,46 @@ def setup_database(
         )
 
     initialize_database(database_path)
-    jpdb_metadata = import_jpdb(
-        jpdb_source,
-        db_path=database_path,
-        version=JPDB_VERSION,
-        now=now,
-        expected_sha256=expected_jpdb_sha256,
-    )
-
-    if with_bccwj:
-        bccwj_metadata = import_bccwj(
-            bccwj_source,
-            db_path=database_path,
-            version=BCCWJ_VERSION,
-            now=now,
-            expected_sha256=expected_bccwj_sha256,
-        )
-        bccwj_entries = bccwj_metadata["entry_count"]
-    else:
+    try:
         with closing(get_connection(database_path)) as connection:
-            bccwj_entries = connection.execute(
-                "SELECT COUNT(*) FROM frequency WHERE source = 'bccwj_luw'"
-            ).fetchone()[0]
+            jpdb_metadata = _stage_jpdb(
+                connection,
+                Path(jpdb_source),
+                version=JPDB_VERSION,
+                now=now,
+                expected_sha256=expected_jpdb_sha256,
+            )
+            staged_sources = [("jpdb", _JPDB_STAGE, jpdb_metadata)]
+            if with_bccwj:
+                bccwj_metadata = _stage_bccwj(
+                    connection,
+                    Path(bccwj_source),
+                    version=BCCWJ_VERSION,
+                    now=now,
+                    expected_sha256=expected_bccwj_sha256,
+                )
+                staged_sources.append(
+                    ("bccwj_luw", _BCCWJ_STAGE, bccwj_metadata)
+                )
+            _publish_staged_sources(connection, staged_sources)
+            if with_bccwj:
+                bccwj_entries = bccwj_metadata["entry_count"]
+            else:
+                bccwj_entries = connection.execute(
+                    "SELECT COUNT(*) FROM frequency WHERE source = 'bccwj_luw'"
+                ).fetchone()[0]
+    except sqlite3.Error as error:
+        raise _database_error(error) from error
+
+    try:
+        database_size = database_path.stat().st_size
+    except OSError as error:
+        raise DatabaseError(str(error)) from error
 
     return {
         "jpdb_entries": jpdb_metadata["entry_count"],
         "bccwj_entries": bccwj_entries,
         "database_path": str(database_path),
-        "database_size_bytes": database_path.stat().st_size,
+        "database_size_bytes": database_size,
         "integrity_check": integrity_check(database_path),
     }

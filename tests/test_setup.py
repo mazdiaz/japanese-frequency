@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -9,9 +10,10 @@ import zipfile
 from contextlib import closing, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from japanese_frequency.errors import DownloadError, SourceFormatError
+from japanese_frequency.database import get_connection
+from japanese_frequency.errors import DatabaseError, DownloadError, SourceFormatError
 from japanese_frequency.setup import (
     BCCWJ_SHA256,
     BCCWJ_URL,
@@ -57,6 +59,34 @@ class SetupTests(unittest.TestCase):
 
     def tearDown(self):
         self.temporary_directory.cleanup()
+
+    def database_state(self):
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            return tuple(
+                connection.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()
+                for table, order in (
+                    ("frequency", "source, word, reading"),
+                    ("source_metadata", "source"),
+                    ("user_words", "word, reading"),
+                )
+            )
+
+    def seed_old_state(self):
+        setup_database(
+            db_path=self.db_path,
+            jpdb_source=self.valid_jpdb,
+            with_bccwj=True,
+            bccwj_source=self.valid_bccwj,
+            jpdb_sha256=self.jpdb_hash,
+            bccwj_sha256=self.bccwj_hash,
+            now=self.clock,
+        )
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "INSERT INTO user_words(word, reading, known, notes) "
+                "VALUES ('読む', 'よむ', 1, 'keep')"
+            )
+            connection.commit()
 
     def test_download_renames_part_only_after_success(self):
         destination = self.root / "source.tsv"
@@ -123,6 +153,82 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(destination.exists())
         self.assertFalse(Path(f"{destination}.part").exists())
 
+    def test_download_directory_creation_failure_is_download_error(self):
+        destination = self.root / "conflict" / "source.tsv"
+        destination.parent.write_text("not a directory", encoding="utf-8")
+
+        with self.assertRaises(DownloadError) as error:
+            download_source("https://example.invalid/source", destination)
+
+        self.assertEqual(error.exception.code, "download_error")
+
+    def test_download_temp_creation_and_replace_failures_are_download_errors(self):
+        destination = self.root / "source.tsv"
+        cases = (
+            patch(
+                "japanese_frequency.setup.tempfile.NamedTemporaryFile",
+                side_effect=OSError("temp denied"),
+            ),
+            patch("japanese_frequency.setup.os.replace", side_effect=OSError("replace denied")),
+        )
+        for failure in cases:
+            with self.subTest(failure=failure):
+                with failure, self.assertRaises(DownloadError) as error:
+                    download_source(
+                        "https://example.invalid/source",
+                        destination,
+                        opener=lambda url: Response(b"data"),
+                    )
+                self.assertEqual(error.exception.code, "download_error")
+
+    def test_download_write_and_flush_failures_are_download_errors(self):
+        destination = self.root / "source.tsv"
+        with patch(
+            "japanese_frequency.setup.shutil.copyfileobj",
+            side_effect=OSError("write denied"),
+        ):
+            with self.assertRaises(DownloadError) as write_error:
+                download_source(
+                    "https://example.invalid/source",
+                    destination,
+                    opener=lambda url: Response(b"data"),
+                )
+
+        partial = self.root / "flush.part"
+        partial.touch()
+        output = MagicMock()
+        output.name = str(partial)
+        output.flush.side_effect = OSError("flush denied")
+        temporary = MagicMock()
+        temporary.__enter__.return_value = output
+        with patch(
+            "japanese_frequency.setup.tempfile.NamedTemporaryFile",
+            return_value=temporary,
+        ):
+            with self.assertRaises(DownloadError) as flush_error:
+                download_source(
+                    "https://example.invalid/source",
+                    destination,
+                    opener=lambda url: Response(b"data"),
+                )
+
+        self.assertEqual(write_error.exception.code, "download_error")
+        self.assertEqual(flush_error.exception.code, "download_error")
+
+    def test_download_cleanup_failure_does_not_mask_original_error(self):
+        destination = self.root / "source.tsv"
+
+        with patch.object(Path, "unlink", side_effect=OSError("cleanup denied")):
+            with self.assertRaises(DownloadError) as error:
+                download_source(
+                    "https://example.invalid/source",
+                    destination,
+                    expected_sha256="0" * 64,
+                    opener=lambda url: Response(b"data"),
+                )
+
+        self.assertEqual(str(error.exception), "download checksum mismatch")
+
     def test_setup_reports_counts_resolved_path_size_and_integrity(self):
         report = setup_database(
             db_path=self.db_path,
@@ -149,7 +255,7 @@ class SetupTests(unittest.TestCase):
         )
         self.assertGreater(report["bccwj_entries"], 0)
 
-        with patch("japanese_frequency.setup.import_bccwj") as importer:
+        with patch("japanese_frequency.setup._stage_bccwj") as importer:
             setup_database(
                 db_path=self.root / "jpdb-only.db",
                 jpdb_source=self.valid_jpdb,
@@ -234,6 +340,77 @@ class SetupTests(unittest.TestCase):
                 self.assertIn("checksum mismatch", str(error.exception))
                 self.assertEqual(state(), before)
 
+    def test_malformed_second_source_preserves_all_existing_state(self):
+        self.seed_old_state()
+        before = self.database_state()
+        replacement_jpdb = self.root / "replacement-jpdb.tsv"
+        replacement_jpdb.write_text(
+            "term\treading\tfrequency\tkana_frequency\n新しい\tあたらしい\t1\t\n",
+            encoding="utf-8",
+        )
+        malformed_bccwj = self.root / "malformed-bccwj.tsv"
+        malformed_bccwj.write_text("wrong\n", encoding="utf-8")
+
+        with self.assertRaises(SourceFormatError):
+            setup_database(
+                db_path=self.db_path,
+                jpdb_source=replacement_jpdb,
+                with_bccwj=True,
+                bccwj_source=malformed_bccwj,
+                jpdb_sha256=hashlib.sha256(replacement_jpdb.read_bytes()).hexdigest(),
+                bccwj_sha256=hashlib.sha256(malformed_bccwj.read_bytes()).hexdigest(),
+                now=self.clock,
+            )
+
+        self.assertEqual(self.database_state(), before)
+
+    def test_multi_source_publish_failure_rolls_back_all_existing_state(self):
+        self.seed_old_state()
+        before = self.database_state()
+        replacement_jpdb = self.root / "replacement-jpdb.tsv"
+        replacement_jpdb.write_text(
+            "term\treading\tfrequency\tkana_frequency\n新しい\tあたらしい\t1\t\n",
+            encoding="utf-8",
+        )
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                "CREATE TRIGGER reject_bccwj BEFORE INSERT ON frequency "
+                "WHEN NEW.source='bccwj_luw' BEGIN SELECT RAISE(ABORT, 'rejected'); END"
+            )
+            connection.commit()
+
+        with self.assertRaises(DatabaseError):
+            setup_database(
+                db_path=self.db_path,
+                jpdb_source=replacement_jpdb,
+                with_bccwj=True,
+                bccwj_source=self.valid_bccwj,
+                jpdb_sha256=hashlib.sha256(replacement_jpdb.read_bytes()).hexdigest(),
+                bccwj_sha256=self.bccwj_hash,
+                now=self.clock,
+            )
+
+        self.assertEqual(self.database_state(), before)
+
+    def test_final_database_stat_failure_is_database_error(self):
+        original_stat = Path.stat
+
+        def fail_database_stat(path, *args, **kwargs):
+            if path == self.db_path.resolve():
+                raise OSError("stat denied")
+            return original_stat(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", new=fail_database_stat):
+            with self.assertRaises(DatabaseError) as error:
+                setup_database(
+                    db_path=self.db_path,
+                    jpdb_source=self.valid_jpdb,
+                    jpdb_sha256=self.jpdb_hash,
+                    now=self.clock,
+                )
+
+        self.assertEqual(error.exception.code, "database_error")
+
     def test_requested_bccwj_failure_is_fatal(self):
         malformed = self.root / "bad-bccwj.tsv"
         malformed.write_text("wrong\n", encoding="utf-8")
@@ -260,11 +437,13 @@ class SetupTests(unittest.TestCase):
         with patch(
             "japanese_frequency.setup.download_source", side_effect=fake_download
         ), patch(
-            "japanese_frequency.setup.import_jpdb",
-            return_value={"entry_count": 2},
+            "japanese_frequency.setup._stage_jpdb",
+            return_value={"source": "jpdb", "entry_count": 2},
         ), patch(
-            "japanese_frequency.setup.import_bccwj",
-            return_value={"entry_count": 1},
+            "japanese_frequency.setup._stage_bccwj",
+            return_value={"source": "bccwj_luw", "entry_count": 1},
+        ), patch(
+            "japanese_frequency.setup._publish_staged_sources",
         ):
             setup_database(
                 db_path=self.db_path, with_bccwj=True, now=self.clock
@@ -322,6 +501,26 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(result, 1)
         payload = json.loads(stderr.getvalue())
         self.assertEqual(payload["error"]["type"], "source_format_error")
+
+    def test_setup_cli_database_path_conflict_emits_json_without_traceback(self):
+        conflict = self.root / "conflict"
+        conflict.write_text("not a directory", encoding="utf-8")
+        stderr = io.StringIO()
+
+        with patch("japanese_frequency.setup.JPDB_SHA256", self.jpdb_hash):
+            with redirect_stderr(stderr):
+                result = setup_cli.main(
+                    [
+                        "--db",
+                        str(conflict / "frequency.db"),
+                        "--jpdb-source",
+                        str(self.valid_jpdb),
+                    ]
+                )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(json.loads(stderr.getvalue())["error"]["type"], "database_error")
+        self.assertNotIn("Traceback", stderr.getvalue())
 
     def test_cli_reconfigures_stdout_for_unicode_report_paths(self):
         report = {"database_path": "C:\\文档\\frequency.db"}

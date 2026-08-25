@@ -40,7 +40,7 @@ BCCWJ_HEADER = (
 BCCWJ_ZIP_MEMBER = "BCCWJ_frequencylist_luw_ver1_0.tsv"
 
 _STAGE_FREQUENCY_SQL = """
-CREATE TEMP TABLE stage_frequency (
+CREATE TEMP TABLE {table} (
     word TEXT NOT NULL,
     reading TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL,
@@ -51,6 +51,10 @@ CREATE TEMP TABLE stage_frequency (
     PRIMARY KEY (word, reading, source)
 )
 """
+
+_JPDB_STAGE = "stage_jpdb_frequency"
+_BCCWJ_STAGE = "stage_bccwj_frequency"
+_BCCWJ_AGGREGATE_STAGE = "stage_bccwj_aggregate"
 
 
 def validate_header(actual, expected, source) -> None:
@@ -184,23 +188,32 @@ def _upsert_metadata(connection, metadata):
     )
 
 
-def _replace_live_source(connection, source, metadata):
+def _create_frequency_stage(connection, table):
+    connection.execute(_STAGE_FREQUENCY_SQL.format(table=table))
+
+
+def _publish_staged_sources(connection, staged_sources):
     connection.commit()
-    connection.execute("BEGIN IMMEDIATE")
-    connection.execute("DELETE FROM frequency WHERE source = ?", (source,))
-    connection.execute(
-        """
-        INSERT INTO frequency(
-            word, reading, source, rank, frequency,
-            frequency_per_million, kana_rank
-        )
-        SELECT word, reading, source, rank, frequency,
-               frequency_per_million, kana_rank
-        FROM stage_frequency
-        """
-    )
-    _upsert_metadata(connection, metadata)
-    connection.commit()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        for source, stage_table, metadata in staged_sources:
+            connection.execute("DELETE FROM frequency WHERE source = ?", (source,))
+            connection.execute(
+                f"""
+                INSERT INTO frequency(
+                    word, reading, source, rank, frequency,
+                    frequency_per_million, kana_rank
+                )
+                SELECT word, reading, source, rank, frequency,
+                       frequency_per_million, kana_rank
+                FROM {stage_table}
+                """
+            )
+            _upsert_metadata(connection, metadata)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def import_jpdb(
@@ -208,86 +221,96 @@ def import_jpdb(
 ) -> dict:
     path = Path(path)
     initialize_database(db_path)
-    with _snapshot_source(path) as (snapshot, digest):
-        if expected_sha256 and digest.lower() != expected_sha256.lower():
-            raise SourceFormatError("jpdb source checksum mismatch")
-        return _import_jpdb_snapshot(
-            snapshot,
-            filename=path.name,
-            digest=digest,
-            db_path=db_path,
-            version=version,
-            now=now,
-        )
-
-
-def _import_jpdb_snapshot(path, *, filename, digest, db_path, version, now):
-    source_rows = 0
-
     try:
         with closing(get_connection(db_path)) as connection:
-            connection.execute(_STAGE_FREQUENCY_SQL)
-            try:
-                with path.open("r", encoding="utf-8-sig", newline="") as source_file:
-                    reader = csv.reader(source_file, delimiter="\t")
-                    validate_header(next(reader, ()), JPDB_HEADER, "jpdb")
-                    for row_number, row in enumerate(reader, start=2):
-                        if len(row) != len(JPDB_HEADER):
-                            raise SourceFormatError(
-                                f"jpdb row {row_number}: expected {len(JPDB_HEADER)} "
-                                f"columns, got {len(row)}"
-                            )
-                        word, reading = _identity(row[0], row[1], "jpdb", row_number)
-                        rank = _positive_integer(
-                            row[2], "jpdb", row_number, "frequency"
-                        )
-                        kana_rank = (
-                            _positive_integer(
-                                row[3], "jpdb", row_number, "kana_frequency"
-                            )
-                            if row[3].strip()
-                            else None
-                        )
-                        connection.execute(
-                            """
-                            INSERT INTO stage_frequency(
-                                word, reading, source, rank, kana_rank
-                            ) VALUES (?, ?, 'jpdb', ?, ?)
-                            ON CONFLICT(word, reading, source) DO UPDATE SET
-                                rank = min(rank, excluded.rank),
-                                kana_rank = CASE
-                                    WHEN kana_rank IS NULL THEN excluded.kana_rank
-                                    WHEN excluded.kana_rank IS NULL THEN kana_rank
-                                    ELSE min(kana_rank, excluded.kana_rank)
-                                END
-                            """,
-                            (word, reading, rank, kana_rank),
-                        )
-                        source_rows += 1
-            except (UnicodeError, csv.Error) as error:
-                raise SourceFormatError(f"jpdb could not be parsed: {error}") from error
-
-            if source_rows == 0:
-                raise SourceFormatError("jpdb must contain at least one data row")
-            entry_count = connection.execute(
-                "SELECT COUNT(*) FROM stage_frequency"
-            ).fetchone()[0]
-            metadata = {
-                "source": "jpdb",
-                "version": version,
-                "filename": filename,
-                "imported_at": _timestamp(now),
-                "source_row_count": source_rows,
-                "entry_count": entry_count,
-                "sha256": digest,
-                "notes": "Duplicate term/reading senses collapsed to minimum ranks.",
-            }
-            _replace_live_source(connection, "jpdb", metadata)
+            metadata = _stage_jpdb(
+                connection,
+                path,
+                version=version,
+                now=now,
+                expected_sha256=expected_sha256,
+            )
+            _publish_staged_sources(
+                connection, [("jpdb", _JPDB_STAGE, metadata)]
+            )
             return metadata
     except OSError as error:
         raise SourceFormatError(f"jpdb source could not be read: {error}") from error
     except sqlite3.Error as error:
         raise _database_error(error) from error
+
+
+def _stage_jpdb(connection, path, *, version, now, expected_sha256=None):
+    try:
+        with _snapshot_source(path) as (snapshot, digest):
+            if expected_sha256 and digest.lower() != expected_sha256.lower():
+                raise SourceFormatError("jpdb source checksum mismatch")
+            return _stage_jpdb_snapshot(
+                connection,
+                snapshot,
+                filename=path.name,
+                digest=digest,
+                version=version,
+                now=now,
+            )
+    except OSError as error:
+        raise SourceFormatError(f"jpdb source could not be read: {error}") from error
+
+
+def _stage_jpdb_snapshot(connection, path, *, filename, digest, version, now):
+    source_rows = 0
+    _create_frequency_stage(connection, _JPDB_STAGE)
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as source_file:
+            reader = csv.reader(source_file, delimiter="\t")
+            validate_header(next(reader, ()), JPDB_HEADER, "jpdb")
+            for row_number, row in enumerate(reader, start=2):
+                if len(row) != len(JPDB_HEADER):
+                    raise SourceFormatError(
+                        f"jpdb row {row_number}: expected {len(JPDB_HEADER)} "
+                        f"columns, got {len(row)}"
+                    )
+                word, reading = _identity(row[0], row[1], "jpdb", row_number)
+                rank = _positive_integer(row[2], "jpdb", row_number, "frequency")
+                kana_rank = (
+                    _positive_integer(row[3], "jpdb", row_number, "kana_frequency")
+                    if row[3].strip()
+                    else None
+                )
+                connection.execute(
+                    f"""
+                    INSERT INTO {_JPDB_STAGE}(
+                        word, reading, source, rank, kana_rank
+                    ) VALUES (?, ?, 'jpdb', ?, ?)
+                    ON CONFLICT(word, reading, source) DO UPDATE SET
+                        rank = min(rank, excluded.rank),
+                        kana_rank = CASE
+                            WHEN kana_rank IS NULL THEN excluded.kana_rank
+                            WHEN excluded.kana_rank IS NULL THEN kana_rank
+                            ELSE min(kana_rank, excluded.kana_rank)
+                        END
+                    """,
+                    (word, reading, rank, kana_rank),
+                )
+                source_rows += 1
+    except (UnicodeError, csv.Error) as error:
+        raise SourceFormatError(f"jpdb could not be parsed: {error}") from error
+
+    if source_rows == 0:
+        raise SourceFormatError("jpdb must contain at least one data row")
+    entry_count = connection.execute(
+        f"SELECT COUNT(*) FROM {_JPDB_STAGE}"
+    ).fetchone()[0]
+    return {
+        "source": "jpdb",
+        "version": version,
+        "filename": filename,
+        "imported_at": _timestamp(now),
+        "source_row_count": source_rows,
+        "entry_count": entry_count,
+        "sha256": digest,
+        "notes": "Duplicate term/reading senses collapsed to minimum ranks.",
+    }
 
 
 @contextmanager
@@ -323,27 +346,47 @@ def import_bccwj(
 ) -> dict:
     path = Path(path)
     initialize_database(db_path)
-    with _snapshot_source(path) as (snapshot, digest):
-        if expected_sha256 and digest.lower() != expected_sha256.lower():
-            raise SourceFormatError("bccwj source checksum mismatch")
-        return _import_bccwj_snapshot(
-            snapshot,
-            filename=path.name,
-            digest=digest,
-            db_path=db_path,
-            version=version,
-            now=now,
-        )
-
-
-def _import_bccwj_snapshot(path, *, filename, digest, db_path, version, now):
-    source_rows = 0
-
     try:
         with closing(get_connection(db_path)) as connection:
-            connection.execute(
-                """
-                CREATE TEMP TABLE stage_bccwj_aggregate (
+            metadata = _stage_bccwj(
+                connection,
+                path,
+                version=version,
+                now=now,
+                expected_sha256=expected_sha256,
+            )
+            _publish_staged_sources(
+                connection, [("bccwj_luw", _BCCWJ_STAGE, metadata)]
+            )
+            return metadata
+    except OSError as error:
+        raise SourceFormatError(f"bccwj source could not be read: {error}") from error
+    except sqlite3.Error as error:
+        raise _database_error(error) from error
+
+
+def _stage_bccwj(connection, path, *, version, now, expected_sha256=None):
+    try:
+        with _snapshot_source(path) as (snapshot, digest):
+            if expected_sha256 and digest.lower() != expected_sha256.lower():
+                raise SourceFormatError("bccwj source checksum mismatch")
+            return _stage_bccwj_snapshot(
+                connection,
+                snapshot,
+                filename=path.name,
+                digest=digest,
+                version=version,
+                now=now,
+            )
+    except OSError as error:
+        raise SourceFormatError(f"bccwj source could not be read: {error}") from error
+
+
+def _stage_bccwj_snapshot(connection, path, *, filename, digest, version, now):
+    source_rows = 0
+    connection.execute(
+        f"""
+                CREATE TEMP TABLE {_BCCWJ_AGGREGATE_STAGE} (
                     word TEXT NOT NULL,
                     reading TEXT NOT NULL,
                     frequency REAL NOT NULL,
@@ -351,84 +394,69 @@ def _import_bccwj_snapshot(path, *, filename, digest, db_path, version, now):
                     PRIMARY KEY (word, reading)
                 )
                 """
-            )
-            connection.execute(_STAGE_FREQUENCY_SQL)
-            try:
-                with _open_bccwj(path) as source_file:
-                    reader = csv.reader(source_file, delimiter="\t")
-                    validate_header(next(reader, ()), BCCWJ_HEADER, "bccwj")
-                    for row_number, row in enumerate(reader, start=2):
-                        if len(row) != len(BCCWJ_HEADER):
-                            raise SourceFormatError(
-                                f"bccwj row {row_number}: expected {len(BCCWJ_HEADER)} "
-                                f"columns, got {len(row)}"
-                            )
-                        _positive_integer(row[0], "bccwj", row_number, "rank")
-                        word, reading = _identity(
-                            row[2],
-                            row[1],
-                            "bccwj",
-                            row_number,
-                            allow_empty_reading=True,
-                        )
-                        frequency = _positive_integer(
-                            row[6], "bccwj", row_number, "frequency"
-                        )
-                        pmw = _nonnegative_number(
-                            row[7], "bccwj", row_number, "pmw"
-                        )
-                        connection.execute(
-                            """
-                            INSERT INTO stage_bccwj_aggregate(
-                                word, reading, frequency, frequency_per_million
-                            ) VALUES (?, ?, ?, ?)
-                            ON CONFLICT(word, reading) DO UPDATE SET
-                                frequency = frequency + excluded.frequency,
-                                frequency_per_million =
-                                    frequency_per_million
-                                    + excluded.frequency_per_million
-                            """,
-                            (word, reading, frequency, pmw),
-                        )
-                        source_rows += 1
-            except (UnicodeError, csv.Error) as error:
-                raise SourceFormatError(f"bccwj could not be parsed: {error}") from error
-
-            if source_rows == 0:
-                raise SourceFormatError("bccwj must contain at least one data row")
-            connection.execute(
-                """
-                INSERT INTO stage_frequency(
-                    word, reading, source, rank, frequency,
-                    frequency_per_million, kana_rank
+    )
+    _create_frequency_stage(connection, _BCCWJ_STAGE)
+    try:
+        with _open_bccwj(path) as source_file:
+            reader = csv.reader(source_file, delimiter="\t")
+            validate_header(next(reader, ()), BCCWJ_HEADER, "bccwj")
+            for row_number, row in enumerate(reader, start=2):
+                if len(row) != len(BCCWJ_HEADER):
+                    raise SourceFormatError(
+                        f"bccwj row {row_number}: expected {len(BCCWJ_HEADER)} "
+                        f"columns, got {len(row)}"
+                    )
+                _positive_integer(row[0], "bccwj", row_number, "rank")
+                word, reading = _identity(
+                    row[2], row[1], "bccwj", row_number, allow_empty_reading=True
                 )
-                SELECT word, reading, 'bccwj_luw',
-                       ROW_NUMBER() OVER (
-                           ORDER BY frequency DESC, word ASC, reading ASC
-                       ),
-                       frequency, frequency_per_million, NULL
-                FROM stage_bccwj_aggregate
-                """
-            )
-            entry_count = connection.execute(
-                "SELECT COUNT(*) FROM stage_frequency"
-            ).fetchone()[0]
-            metadata = {
-                "source": "bccwj_luw",
-                "version": version,
-                "filename": filename,
-                "imported_at": _timestamp(now),
-                "source_row_count": source_rows,
-                "entry_count": entry_count,
-                "sha256": digest,
-                "notes": (
-                    "Duplicate lemma/reading rows summed; rank is project-computed "
-                    "by frequency DESC, word ASC, reading ASC."
-                ),
-            }
-            _replace_live_source(connection, "bccwj_luw", metadata)
-            return metadata
-    except OSError as error:
-        raise SourceFormatError(f"bccwj source could not be read: {error}") from error
-    except sqlite3.Error as error:
-        raise _database_error(error) from error
+                frequency = _positive_integer(
+                    row[6], "bccwj", row_number, "frequency"
+                )
+                pmw = _nonnegative_number(row[7], "bccwj", row_number, "pmw")
+                connection.execute(
+                    f"""
+                    INSERT INTO {_BCCWJ_AGGREGATE_STAGE}(
+                        word, reading, frequency, frequency_per_million
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(word, reading) DO UPDATE SET
+                        frequency = frequency + excluded.frequency,
+                        frequency_per_million =
+                            frequency_per_million + excluded.frequency_per_million
+                    """,
+                    (word, reading, frequency, pmw),
+                )
+                source_rows += 1
+    except (UnicodeError, csv.Error) as error:
+        raise SourceFormatError(f"bccwj could not be parsed: {error}") from error
+
+    if source_rows == 0:
+        raise SourceFormatError("bccwj must contain at least one data row")
+    connection.execute(
+        f"""
+        INSERT INTO {_BCCWJ_STAGE}(
+            word, reading, source, rank, frequency,
+            frequency_per_million, kana_rank
+        )
+        SELECT word, reading, 'bccwj_luw',
+               ROW_NUMBER() OVER (ORDER BY frequency DESC, word ASC, reading ASC),
+               frequency, frequency_per_million, NULL
+        FROM {_BCCWJ_AGGREGATE_STAGE}
+        """
+    )
+    entry_count = connection.execute(
+        f"SELECT COUNT(*) FROM {_BCCWJ_STAGE}"
+    ).fetchone()[0]
+    return {
+        "source": "bccwj_luw",
+        "version": version,
+        "filename": filename,
+        "imported_at": _timestamp(now),
+        "source_row_count": source_rows,
+        "entry_count": entry_count,
+        "sha256": digest,
+        "notes": (
+            "Duplicate lemma/reading rows summed; rank is project-computed "
+            "by frequency DESC, word ASC, reading ASC."
+        ),
+    }

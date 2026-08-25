@@ -103,6 +103,16 @@ class CliTests(unittest.TestCase):
         self.assertTrue(error["message"])
         self.assertNotIn("frequency", error["message"])
 
+    def test_database_parent_path_conflict_has_json_without_traceback(self):
+        conflict = self.db_path.parent / "conflict"
+        conflict.write_text("not a directory", encoding="utf-8")
+
+        result = self.run_cli("lookup", "読む", db_path=conflict / "frequency.db")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.payload(result)["error"]["type"], "database_error")
+        self.assertNotIn(b"Traceback", result.stderr)
+
     def test_database_busy_error_does_not_expose_sqlite_message(self):
         connection = get_connection(self.db_path)
         connection.execute("BEGIN IMMEDIATE")

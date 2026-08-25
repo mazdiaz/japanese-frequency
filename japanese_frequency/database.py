@@ -47,7 +47,7 @@ CREATE INDEX IF NOT EXISTS idx_frequency_source_rank ON frequency(source, rank);
 """
 
 
-def _database_error(error: sqlite3.Error) -> DatabaseError:
+def _database_error(error) -> DatabaseError:
     message = str(error)
     if isinstance(error, sqlite3.OperationalError) and (
         "locked" in message.lower() or "busy" in message.lower()
@@ -58,9 +58,9 @@ def _database_error(error: sqlite3.Error) -> DatabaseError:
 
 def get_connection(db_path=None) -> sqlite3.Connection:
     path = Path(db_path or config.DEFAULT_DATABASE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
     connection = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(
             path, timeout=config.SQLITE_BUSY_TIMEOUT_MS / 1000
         )
@@ -69,7 +69,7 @@ def get_connection(db_path=None) -> sqlite3.Connection:
         connection.execute(f"PRAGMA busy_timeout = {config.SQLITE_BUSY_TIMEOUT_MS}")
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
-    except sqlite3.Error as error:
+    except (OSError, sqlite3.Error) as error:
         if connection is not None:
             connection.close()
         raise _database_error(error) from error
