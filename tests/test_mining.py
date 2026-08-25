@@ -253,6 +253,16 @@ class MiningTests(unittest.TestCase):
         self.assertIn("already_in_anki", candidates["語"]["reasons"])
         self.assertNotIn("hard_skip", candidates["語"]["score_components"])
 
+    def test_known_identity_and_anki_retain_both_skip_reasons(self):
+        self.seed_exact("既知", "きち", occurrences=20)
+        self.seed_user("既知", "きち", known=True, in_anki=True)
+
+        candidate = self.one_candidate(analyze_media("media", db_path=self.db_path))
+
+        self.assertEqual(candidate["tier"], "skip")
+        self.assertIn("known_identity", candidate["reasons"])
+        self.assertIn("already_in_anki", candidate["reasons"])
+
     def test_known_spelling_never_becomes_skip_by_itself(self):
         self.seed_exact("希語", "きご", occurrences=1, media_rank=1)
         self.seed_known_spelling("希語")

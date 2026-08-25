@@ -1,5 +1,6 @@
 import inspect
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -158,11 +159,21 @@ class AgentDocumentationTests(unittest.TestCase):
 
     def test_ignore_rules_scope_personal_import_patterns(self):
         lines = Path(".gitignore").read_text(encoding="utf-8").splitlines()
-        self.assertIn("data/imports/migaku_known_words_*.txt", lines)
-        self.assertIn("data/imports/media/*.txt", lines)
-        self.assertIn("data/imports/media/*.csv", lines)
+        self.assertIn("data/imports/", lines)
         self.assertNotIn("*.txt", lines)
         self.assertNotIn("*.csv", lines)
+        for path in (
+            "data/imports/private/export.bin",
+            "data/imports/media/deep/episode.csv",
+        ):
+            with self.subTest(path=path):
+                result = subprocess.run(
+                    ["git", "check-ignore", "--no-index", path],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

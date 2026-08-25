@@ -500,7 +500,15 @@ class SetupTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         payload = json.loads(stderr.getvalue())
-        self.assertEqual(payload["error"]["type"], "source_format_error")
+        self.assertEqual(
+            payload,
+            {
+                "error": {
+                    "type": "source_not_found",
+                    "message": f"source file not found: {self.root / 'missing.tsv'}",
+                }
+            },
+        )
 
     def test_setup_cli_database_path_conflict_emits_json_without_traceback(self):
         conflict = self.root / "conflict"

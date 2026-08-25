@@ -12,9 +12,10 @@ from japanese_frequency.errors import (
     InvalidInputError,
     MediaNotFoundError,
     SourceFormatError,
+    SourceNotFoundError,
 )
 from japanese_frequency.normalization import normalize_reading, normalize_word
-from japanese_frequency.source_files import snapshot_source
+from japanese_frequency.source_files import snapshot_source, validated_source_path
 from japanese_frequency.timestamps import format_utc_timestamp
 
 
@@ -32,7 +33,7 @@ _OPTIONAL_FIELDS = (
 def import_media_vocabulary(
     path, source_key, display_name=None, *, db_path=None, now=None
 ) -> dict:
-    requested_path = Path(path)
+    requested_path = validated_source_path(path)
     source_key = _required_text(source_key, "source_key")
     if display_name is None:
         display_name = requested_path.stem
@@ -90,6 +91,8 @@ def _required_text(value, name):
 def _select_source(requested_path):
     suffix = requested_path.suffix.lower()
     if suffix not in {".csv", ".txt"}:
+        if not requested_path.exists():
+            raise SourceNotFoundError(f"source file not found: {requested_path}")
         raise SourceFormatError("media source must be a CSV or TXT file")
     selected_path = requested_path
     notes = "Imported requested source directly."
@@ -101,6 +104,8 @@ def _select_source(requested_path):
             notes = "Same-stem CSV superseded requested TXT source."
         else:
             notes = "TXT imported as unordered spelling membership."
+    if not selected_path.exists():
+        raise SourceNotFoundError(f"source file not found: {selected_path}")
     if not selected_path.is_file():
         raise SourceFormatError(f"media source is not a readable file: {selected_path}")
     return selected_path, suffix[1:], notes

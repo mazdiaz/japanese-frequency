@@ -11,7 +11,9 @@ from japanese_frequency.database import get_connection
 from japanese_frequency.errors import (
     DatabaseBusyError,
     DatabaseError,
+    InvalidInputError,
     SourceFormatError,
+    SourceNotFoundError,
 )
 from japanese_frequency.knowledge import get_known_spelling, import_migaku_known_words
 
@@ -158,19 +160,20 @@ class KnowledgeTests(unittest.TestCase):
 
         self.assertIn("line 2", str(error.exception))
 
-    def test_missing_invalid_utf8_and_source_io_are_typed_format_errors(self):
+    def test_missing_source_is_typed_not_found(self):
+        with self.assertRaises(SourceNotFoundError) as error:
+            import_migaku_known_words(
+                self.directory / "missing.txt", db_path=self.db_path, now=self.clock
+            )
+
+        self.assertEqual(error.exception.code, "source_not_found")
+        self.assertTrue(str(error.exception))
+
+    def test_invalid_utf8_and_source_io_are_typed_format_errors(self):
         invalid = self.write_bytes(b"\xff\n", name="invalid.txt")
-        cases = (
-            self.directory / "missing.txt",
-            invalid,
-        )
-        for source in cases:
-            with self.subTest(source=source.name):
-                with self.assertRaises(SourceFormatError) as error:
-                    import_migaku_known_words(
-                        source, db_path=self.db_path, now=self.clock
-                    )
-                self.assertEqual(error.exception.code, "source_format_error")
+        with self.assertRaises(SourceFormatError) as error:
+            import_migaku_known_words(invalid, db_path=self.db_path, now=self.clock)
+        self.assertEqual(error.exception.code, "source_format_error")
 
         with patch.object(Path, "open", side_effect=OSError("read denied")):
             with self.assertRaises(SourceFormatError) as error:
@@ -178,6 +181,13 @@ class KnowledgeTests(unittest.TestCase):
                     self.valid_source, db_path=self.db_path, now=self.clock
                 )
         self.assertEqual(error.exception.code, "source_format_error")
+
+    def test_invalid_path_types_raise_domain_error(self):
+        for path in (None, 3, object(), b"known.txt"):
+            with self.subTest(path=path):
+                with self.assertRaises(InvalidInputError) as error:
+                    import_migaku_known_words(path, db_path=self.db_path)
+                self.assertEqual(str(error.exception), "path must be a string or path-like object")
 
     def test_immutable_snapshot_read_failure_is_typed_format_error(self):
         original_open = Path.open

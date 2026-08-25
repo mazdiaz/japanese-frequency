@@ -103,6 +103,33 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "ambiguous_reading")
         json.dumps(error.exception.matches)
 
+    def test_exact_media_includes_alternate_corpus_identity_in_ambiguity(self):
+        self.seed_exact("開く", "あく")
+        self.execute(
+            "INSERT INTO frequency(word, reading, source) VALUES (?, ?, ?)",
+            ("開く", "ひらく", "jpdb"),
+        )
+
+        with self.assertRaises(AmbiguousReadingError) as error:
+            recommend_media_word("media", "開く", db_path=self.db_path)
+
+        self.assertEqual(error.exception.matches, ["あく", "ひらく"])
+
+    def test_recommendation_normalizes_word_and_reading(self):
+        self.seed_exact("がく", "がく")
+
+        cases = (
+            (" がく ", " がく "),
+            ("か\u3099く", "がく"),
+            ("がく", "ガク"),
+        )
+        for word, reading in cases:
+            with self.subTest(word=word, reading=reading):
+                result = recommend_media_word(
+                    "media", word, reading, db_path=self.db_path
+                )
+                self.assertEqual((result["word"], result["reading"]), ("がく", "がく"))
+
     def test_existing_ambiguity_message_and_type_gain_sorted_matches(self):
         self.execute(
             "INSERT INTO frequency(word, reading, source) VALUES (?, ?, ?)",

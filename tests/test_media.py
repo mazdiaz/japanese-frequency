@@ -14,6 +14,7 @@ from japanese_frequency.errors import (
     InvalidInputError,
     MediaNotFoundError,
     SourceFormatError,
+    SourceNotFoundError,
 )
 from japanese_frequency.media import (
     get_media_source,
@@ -334,13 +335,25 @@ class MediaTests(unittest.TestCase):
         with self.assertRaises(InvalidInputError):
             import_media_vocabulary(source, "valid", " ", db_path=self.db_path)
 
-    def test_missing_unsupported_and_directory_sources_are_typed(self):
-        cases = (
-            self.directory / "missing.txt",
-            self.write("words.json", "[]"),
-            self.directory,
-        )
-        for source in cases:
+    def test_invalid_path_types_raise_domain_error(self):
+        for path in (None, 3, object(), b"media.csv"):
+            with self.subTest(path=path):
+                with self.assertRaises(InvalidInputError) as error:
+                    import_media_vocabulary(path, "source", db_path=self.db_path)
+                self.assertEqual(str(error.exception), "path must be a string or path-like object")
+
+    def test_missing_source_is_typed_not_found(self):
+        for name in ("missing.txt", "missing.json"):
+            with self.subTest(name=name):
+                with self.assertRaises(SourceNotFoundError) as error:
+                    import_media_vocabulary(
+                        self.directory / name, "source", db_path=self.db_path
+                    )
+                self.assertEqual(error.exception.code, "source_not_found")
+                self.assertTrue(str(error.exception))
+
+    def test_unsupported_and_directory_sources_are_typed_format_errors(self):
+        for source in (self.write("words.json", "[]"), self.directory):
             with self.subTest(source=source):
                 with self.assertRaises(SourceFormatError):
                     import_media_vocabulary(source, "source", db_path=self.db_path)

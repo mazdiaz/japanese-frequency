@@ -1,6 +1,5 @@
 import sqlite3
 from contextlib import closing
-from pathlib import Path
 
 from japanese_frequency.database import (
     _database_error,
@@ -9,7 +8,7 @@ from japanese_frequency.database import (
 )
 from japanese_frequency.errors import InvalidInputError, SourceFormatError
 from japanese_frequency.normalization import normalize_word
-from japanese_frequency.source_files import snapshot_source
+from japanese_frequency.source_files import snapshot_source, validated_source_path
 from japanese_frequency.timestamps import format_utc_timestamp
 
 
@@ -18,7 +17,7 @@ _NOTES = "Duplicate spellings collapsed after NFC normalization."
 
 
 def import_migaku_known_words(path, *, db_path=None, now=None) -> dict:
-    path = Path(path)
+    path = validated_source_path(path)
     initialize_database(db_path)
     connection = get_connection(db_path)
     try:

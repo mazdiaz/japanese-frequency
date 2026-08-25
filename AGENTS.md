@@ -251,7 +251,7 @@ tier, failed recall, spelling membership, or frequency.
 
 ## Failures, Backup, And Tests
 
-Treat `invalid_input`, `source_format_error`, `media_not_found`,
+Treat `invalid_input`, `source_format_error`, `source_not_found`, `media_not_found`,
 `ambiguous_reading`, `database_busy`, and `database_error` as recoverable typed
 failures. Do not expose raw database details. On ambiguity, present safe matches.
 On lock failure, stop competing writers and retry; do not delete database.

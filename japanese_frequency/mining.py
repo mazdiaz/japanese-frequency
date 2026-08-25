@@ -15,6 +15,7 @@ from japanese_frequency.errors import (
     SourceFormatError,
 )
 from japanese_frequency.media import get_media_source, iter_media_candidates
+from japanese_frequency.normalization import normalize_reading, normalize_word
 
 
 _MEDIA_FIELDS = (
@@ -152,16 +153,16 @@ def _score_candidate(candidate, context=None) -> dict:
                 reasons.append(name)
 
     score = sum(components.values())
-    if personal["known_identity"] is True:
+    if personal["known_identity"] is True or personal["in_anki"] is True:
         tier = "skip"
-        reasons.append("known_identity")
-    elif personal["in_anki"] is True:
-        tier = "skip"
-        reasons.append("already_in_anki")
     elif score >= config.MINING_MINE_SCORE:
         tier = "mine"
     else:
         tier = "review"
+    if personal["known_identity"] is True:
+        reasons.append("known_identity")
+    if personal["in_anki"] is True:
+        reasons.append("already_in_anki")
     return {
         "tier": tier,
         "score": score,
@@ -262,9 +263,13 @@ def _build_candidates(media_rows, frequencies, users, known_spellings):
         for row in media_rows
         if row["identity_type"] == "spelling"
     }
+    exact_media_by_word = {}
+    for identity, row in exact_media.items():
+        exact_media_by_word.setdefault(identity[0], row)
+    media_words = set(exact_media_by_word) | set(spelling_media)
     identities = set(exact_media)
     identities.update(
-        identity for identity in frequencies if identity[0] in spelling_media
+        identity for identity in frequencies if identity[0] in media_words
     )
 
     candidates = []
@@ -272,7 +277,7 @@ def _build_candidates(media_rows, frequencies, users, known_spellings):
         word, reading = identity
         exact_row = exact_media.get(identity)
         spelling_row = spelling_media.get(word)
-        source_row = exact_row or spelling_row
+        source_row = exact_row or spelling_row or exact_media_by_word[word]
         media = _media_evidence(source_row)
         if spelling_row is not None:
             media["spelling"] = _media_evidence(spelling_row)
@@ -377,11 +382,11 @@ def recommend_media_word(
     personally_useful=False,
     db_path=None,
 ) -> dict:
-    if not isinstance(word, str) or not word.strip():
-        raise InvalidInputError("word must be a nonempty string")
-    if reading is not None and (
-        not isinstance(reading, str) or not reading.strip()
-    ):
+    word = normalize_word(word)
+    if reading is not None and not isinstance(reading, str):
+        raise InvalidInputError("reading must be a nonempty string or null")
+    reading = normalize_reading(reading)
+    if reading == "":
         raise InvalidInputError("reading must be a nonempty string or null")
     context = {
         "failed_recall": failed_recall,

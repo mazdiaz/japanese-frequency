@@ -12,7 +12,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from japanese_frequency.database import get_connection
-from japanese_frequency.errors import DatabaseError, SourceFormatError
+from japanese_frequency.errors import (
+    DatabaseError,
+    SourceFormatError,
+    SourceNotFoundError,
+)
 from japanese_frequency.importers import import_bccwj, import_jpdb, validate_header
 
 
@@ -224,17 +228,17 @@ class ImporterTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([row["word"] for row in words], ["読む"])
 
-    def test_missing_import_sources_are_typed_format_errors(self):
+    def test_missing_import_sources_are_typed_not_found_errors(self):
         missing = self.directory / "missing-source"
         for importer, suffix in ((import_jpdb, ".tsv"), (import_bccwj, ".zip")):
             with self.subTest(importer=importer.__name__):
-                with self.assertRaises(SourceFormatError) as error:
+                with self.assertRaises(SourceNotFoundError) as error:
                     importer(
                         missing.with_suffix(suffix),
                         db_path=self.db_path,
                         now=self.clock,
                     )
-                self.assertEqual(error.exception.code, "source_format_error")
+                self.assertEqual(error.exception.code, "source_not_found")
 
     def test_snapshot_write_oserror_is_typed_format_error(self):
         original_open = Path.open

@@ -102,8 +102,50 @@ class ToolTests(unittest.TestCase):
 
         self.assertEqual(set(response), {"ok", "error"})
         self.assertIs(response["ok"], False)
+        self.assertEqual(set(response["error"]), {"type", "message", "matches"})
         self.assertEqual(response["error"]["type"], "ambiguous_reading")
+        self.assertTrue(response["error"]["message"])
         self.assertEqual(response["error"]["matches"], ["あく", "ひらく"])
+
+    def test_import_errors_use_exact_safe_failure_envelopes(self):
+        missing = self.root / "missing.txt"
+        responses = (
+            (
+                import_migaku_known_vocabulary(None, db_path=self.db_path),
+                "invalid_input",
+                "path must be a string or path-like object",
+            ),
+            (
+                import_japanese_media_vocabulary(None, "media", db_path=self.db_path),
+                "invalid_input",
+                "path must be a string or path-like object",
+            ),
+            (
+                import_migaku_known_vocabulary(missing, db_path=self.db_path),
+                "source_not_found",
+                f"source file not found: {missing}",
+            ),
+            (
+                import_japanese_media_vocabulary(
+                    missing, "media", db_path=self.db_path
+                ),
+                "source_not_found",
+                f"source file not found: {missing}",
+            ),
+            (
+                analyze_japanese_media("media", limit=-1, db_path=self.db_path),
+                "invalid_input",
+                "limit must be a nonnegative integer or null",
+            ),
+        )
+
+        for response, error_type, message in responses:
+            with self.subTest(error_type=error_type, message=message):
+                self.assertEqual(set(response), {"ok", "error"})
+                self.assertIs(response["ok"], False)
+                self.assertEqual(
+                    response["error"], {"type": error_type, "message": message}
+                )
 
     def test_invalid_and_ambiguous_inputs_use_stable_failure_envelopes(self):
         responses = (
@@ -116,6 +158,12 @@ class ToolTests(unittest.TestCase):
                 self.assertEqual(set(response), {"ok", "error"})
                 self.assertIs(response["ok"], False)
                 self.assertEqual(response["error"]["type"], error_type)
+                self.assertEqual(
+                    set(response["error"]),
+                    {"type", "message", "matches"}
+                    if error_type == "ambiguous_reading"
+                    else {"type", "message"},
+                )
                 self.assertIsInstance(response["error"]["message"], str)
                 self.assertTrue(response["error"]["message"])
 
@@ -140,7 +188,7 @@ class ToolTests(unittest.TestCase):
                 self.assertEqual(set(response), {"ok", "error"})
                 self.assertIs(response["ok"], False)
                 self.assertEqual(response["error"]["type"], error_type)
-                self.assertIn("message", response["error"])
+                self.assertEqual(set(response["error"]), {"type", "message"})
                 self.assertTrue(response["error"]["message"])
                 self.assertNotIn("private_frequency_schema", response["error"]["message"])
 

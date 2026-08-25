@@ -170,6 +170,10 @@ class CliTests(unittest.TestCase):
             (self.run_cli("recommend-media", "media", "開く"), "ambiguous_reading"),
             (self.run_cli("analyze-media", "media", "--limit", "invalid"), "invalid_input"),
             (
+                self.run_cli("import-known", str(self.root / "missing.txt")),
+                "source_not_found",
+            ),
+            (
                 self.run_cli("analyze-media", "media", db_path=malformed_db),
                 "database_error",
             ),
@@ -178,7 +182,15 @@ class CliTests(unittest.TestCase):
         for result, error_type in results:
             with self.subTest(error_type=error_type):
                 self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(self.payload(result)["error"]["type"], error_type)
+                error = self.payload(result)["error"]
+                expected_keys = (
+                    {"type", "message", "matches"}
+                    if error_type == "ambiguous_reading"
+                    else {"type", "message"}
+                )
+                self.assertEqual(set(error), expected_keys)
+                self.assertEqual(error["type"], error_type)
+                self.assertTrue(error["message"])
         self.assertEqual(
             self.payload(results[1][0])["error"]["matches"], ["あく", "ひらく"]
         )
@@ -194,8 +206,15 @@ class CliTests(unittest.TestCase):
             with self.subTest(error_type=error_type):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(set(self.payload(result)), {"error"})
-                self.assertEqual(self.payload(result)["error"]["type"], error_type)
-                self.assertIn("message", self.payload(result)["error"])
+                error = self.payload(result)["error"]
+                self.assertEqual(
+                    set(error),
+                    {"type", "message", "matches"}
+                    if error_type == "ambiguous_reading"
+                    else {"type", "message"},
+                )
+                self.assertEqual(error["type"], error_type)
+                self.assertTrue(error["message"])
 
     def test_database_error_is_machine_readable_and_nonzero(self):
         malformed_db = self.db_path.parent / "private_frequency_schema.db"
@@ -205,7 +224,7 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         error = self.payload(result)["error"]
         self.assertEqual(error["type"], "database_error")
-        self.assertIn("message", error)
+        self.assertEqual(set(error), {"type", "message"})
         self.assertTrue(error["message"])
         self.assertNotIn("frequency", error["message"])
 
@@ -231,7 +250,7 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         error = self.payload(result)["error"]
         self.assertEqual(error["type"], "database_busy")
-        self.assertIn("message", error)
+        self.assertEqual(set(error), {"type", "message"})
         self.assertTrue(error["message"])
         self.assertNotIn("locked", error["message"].lower())
 

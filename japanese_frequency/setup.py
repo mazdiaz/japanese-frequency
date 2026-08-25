@@ -14,7 +14,12 @@ from japanese_frequency.database import (
     initialize_database,
     integrity_check,
 )
-from japanese_frequency.errors import DatabaseError, DownloadError, SourceFormatError
+from japanese_frequency.errors import (
+    DatabaseError,
+    DownloadError,
+    SourceFormatError,
+    SourceNotFoundError,
+)
 from japanese_frequency.importers import (
     _BCCWJ_STAGE,
     _JPDB_STAGE,
@@ -86,6 +91,8 @@ def _verify_pinned_source(path, expected_sha256, source) -> Path:
     path = Path(path)
     try:
         actual_sha256 = sha256_file(path)
+    except FileNotFoundError as error:
+        raise SourceNotFoundError(f"source file not found: {path}") from error
     except OSError as error:
         raise SourceFormatError(f"{source} source could not be read: {error}") from error
     if actual_sha256.lower() != expected_sha256.lower():
