@@ -1,4 +1,4 @@
-# Japanese Frequency
+# Japanese Frequency Parser
 
 Local, standard-library Python package for Japanese frequency lookup and private
 vocabulary tracking. SQLite stores replaceable corpus data and personal state in
