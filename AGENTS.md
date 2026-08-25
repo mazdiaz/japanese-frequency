@@ -30,16 +30,33 @@ is `data/japanese_frequency.db`, defined by `config.DEFAULT_DATABASE_PATH`.
 Pass `db_path=...` to Python calls or place CLI-global `--db PATH` before command
 to use another database.
 
-For frequency-backed mining, initialize JPDB first:
+Database setup is both source import and database mutation. Obtain explicit user
+authorization before any download or database mutation, including first-time
+setup and refresh. Prefer offline setup with already-downloaded local sources:
 
 ```console
-python setup_database.py
-python -m japanese_frequency lookup example
+python setup_database.py --jpdb-source C:\local\corpora\jpdb_v2.2.csv --db C:\local\data\japanese_frequency.db
+python setup_database.py --jpdb-source C:\local\corpora\jpdb_v2.2.csv --with-bccwj --bccwj-source C:\local\corpora\BCCWJ_frequencylist_luw_ver1_0.zip --db C:\local\data\japanese_frequency.db
 ```
 
-Setup output must report `integrity_check: "ok"`. Imports initialize missing
-schema, but media analysis without corpus data has less identity and frequency
-evidence.
+`--jpdb-source PATH` supplies mandatory local JPDB input. To include local
+BCCWJ, pass both `--with-bccwj` and `--bccwj-source PATH`; without
+`--with-bccwj`, BCCWJ is neither imported nor refreshed. `--db PATH` selects
+target database.
+
+Running python setup_database.py without --jpdb-source downloads pinned JPDB
+source from URL recorded in `japanese_frequency.setup` into database-adjacent
+`sources/`. Adding `--with-bccwj` without `--bccwj-source` also downloads pinned
+BCCWJ source. Never use either network path without explicit approval. Both
+downloaded and explicit local setup sources undergo pinned SHA-256 validation;
+checksum mismatch is fatal and does not publish staged corpus changes. Setup
+accepts only pinned source versions. Use standalone import scripts for an
+intentionally different source version after separate user approval.
+
+Successful setup mutates requested corpus rows and metadata while preserving
+personal `user_words`. Output must report `integrity_check: "ok"`. Imports can
+initialize missing schema, but media analysis without corpus data has less
+identity and frequency evidence.
 
 ## Refresh Migaku Known Spellings
 
@@ -108,39 +125,88 @@ CLI forms. CLI values must be lowercase `true` or `false`.
 
 ## Public Interfaces
 
-Core package APIs exported from `japanese_frequency`:
+Exact mining domain API signatures exported from `japanese_frequency`:
 
-- `lookup_frequency(word, reading=None, *, db_path=None)`
-- `classify_jpdb_rank(rank)`
-- `get_word_profile(word, reading=None, *, db_path=None)`
-- `record_encounter(word, reading=None, *, db_path=None)`
-- `mark_known(word, reading=None, known=True, *, db_path=None)`
-- `set_in_anki(word, reading=None, in_anki=True, *, db_path=None)`
-- `get_known_spelling(word, *, connection=None, db_path=None)`
-- `import_migaku_known_words`, `import_media_vocabulary`, `get_media_source`
-- `analyze_media`, `export_media_analysis_csv`, `recommend_media_word`
+- `get_known_spelling(word, *, connection=None, db_path=None) -> dict`
+- `get_media_source(source_key, *, db_path=None, connection=None) -> dict`
+- `import_migaku_known_words(path, *, db_path=None, now=None) -> dict`
+- `import_media_vocabulary(path, source_key, display_name=None, *, db_path=None, now=None) -> dict`
+- `analyze_media(source_key, *, limit=None, db_path=None) -> dict`
+- `export_media_analysis_csv(analysis, output_path) -> dict`
+- `recommend_media_word(source_key, word, reading=None, *, failed_recall=False, successful_inference=False, transparent_composition=False, personally_useful=False, db_path=None) -> dict`
 
-Agent wrappers in `japanese_frequency.tools` never print and always return one
-of these exact envelope shapes:
+`now` is a deterministic timestamp injection point intended for tests. Normal
+callers omit it. `connection` permits a caller-owned database connection;
+otherwise function opens connection from `db_path` or default path.
 
-```json
-{"ok": true, "result": {}}
-{"ok": false, "error": {"type": "invalid_input", "message": "..."}}
+Exact mining agent wrapper signatures in `japanese_frequency.tools`:
+
+- `import_migaku_known_vocabulary(path, *, db_path=None)`
+- `import_japanese_media_vocabulary(path, source_key, display_name=None, *, db_path=None)`
+- `analyze_japanese_media(source_key, *, limit=None, db_path=None)`
+- `recommend_japanese_media_word(source_key, word, reading=None, *, failed_recall=False, successful_inference=False, transparent_composition=False, personally_useful=False, db_path=None)`
+
+Other stable lookup/state wrappers remain `lookup_japanese_frequency`,
+`get_japanese_word_profile`, `record_japanese_encounter`,
+`mark_japanese_word_known`, and `set_japanese_word_anki_status`.
+
+## CLI Contract
+
+`--db` is global and must appear before command. Brackets below mean optional;
+braces show accepted literal values.
+
+```console
+python -m japanese_frequency [--db DB_PATH] lookup WORD [READING]
+python -m japanese_frequency [--db DB_PATH] profile WORD [READING]
+python -m japanese_frequency [--db DB_PATH] encounter WORD [READING]
+python -m japanese_frequency [--db DB_PATH] known WORD [READING] [--value {true,false}]
+python -m japanese_frequency [--db DB_PATH] anki WORD [READING] [--value {true,false}]
+python -m japanese_frequency [--db DB_PATH] import-known PATH
+python -m japanese_frequency [--db DB_PATH] import-media PATH --source-key SOURCE_KEY [--name DISPLAY_NAME]
+python -m japanese_frequency [--db DB_PATH] analyze-media SOURCE_KEY [--limit LIMIT] [--output PATH]
+python -m japanese_frequency [--db DB_PATH] recommend-media SOURCE_KEY WORD [READING] [--failed-recall {true,false}] [--successful-inference {true,false}] [--transparent-composition {true,false}] [--personally-useful {true,false}]
 ```
 
-Wrappers are `lookup_japanese_frequency`, `get_japanese_word_profile`,
-`record_japanese_encounter`, `mark_japanese_word_known`,
-`set_japanese_word_anki_status`, `import_migaku_known_vocabulary`,
-`import_japanese_media_vocabulary`, `analyze_japanese_media`, and
-`recommend_japanese_media_word`. `ambiguous_reading` errors also include sorted
-safe `matches`.
+`LIMIT` must be nonnegative. `known` and `anki` default `--value` to `true`.
+Recommendation context flags default to `false`. `analyze-media --output PATH`
+writes UTF-8-with-BOM CSV atomically and prints source, summary, and report
+metadata instead of candidate rows.
 
-CLI commands are `lookup`, `profile`, `encounter`, `known`, `anki`,
-`import-known`, `import-media`, `analyze-media`, and `recommend-media`. CLI
-success prints direct UTF-8 JSON result, not tool envelope. Failure prints
-`{"error": {...}}` and exits nonzero. `analyze-media --output PATH` writes
-UTF-8-with-BOM CSV atomically and prints only source, summary, and report
-metadata.
+## Envelope Contract
+
+Agent wrappers never print. Success always has exactly `ok` and `result`; result
+is domain API object:
+
+```text
+{"ok": true, "result": <object>}
+```
+
+Ordinary wrapper failure always has exactly `ok` and `error`; error contains
+safe type and message:
+
+```text
+{"ok": false, "error": {"type": "<code>", "message": "<safe message>"}}
+```
+
+For `ambiguous_reading`, sorted `matches` is inside `error`, alongside `type`
+and `message`, never at top level:
+
+```text
+{"ok": false, "error": {"type": "ambiguous_reading", "message": "<safe message>", "matches": ["<reading>"]}}
+```
+
+CLI success prints direct UTF-8 domain result with no `ok` envelope. Ordinary
+CLI failure exits nonzero and prints:
+
+```text
+{"error": {"type": "<code>", "message": "<safe message>"}}
+```
+
+CLI ambiguity also places sorted `matches` inside `error`:
+
+```text
+{"error": {"type": "ambiguous_reading", "message": "<safe message>", "matches": ["<reading>"]}}
+```
 
 ## Identity And Tri-State Semantics
 
