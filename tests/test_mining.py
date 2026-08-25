@@ -288,27 +288,85 @@ class MiningTests(unittest.TestCase):
                 "media_rank_100": 2,
             },
         )
-        self.assertEqual(candidate["frequency"]["jpdb"], {"rank": 5000, "kana_rank": 88})
+        self.assertEqual(
+            candidate["frequency"]["jpdb"],
+            {
+                "rank": 5000,
+                "frequency": None,
+                "frequency_per_million": None,
+                "kana_rank": 88,
+            },
+        )
         self.assertEqual(
             candidate["frequency"]["bccwj_luw"],
-            {"rank": 9000, "frequency": 12.5, "frequency_per_million": 1.25},
+            {
+                "rank": 9000,
+                "frequency": 12.5,
+                "frequency_per_million": 1.25,
+                "kana_rank": None,
+            },
         )
         json.dumps(candidate)
 
-    def test_global_order_is_tier_score_null_last_rank_then_identity(self):
-        self.seed_exact("乙", "おつ", occurrences=1, media_rank=2)
-        self.seed_exact("甲", "こう", occurrences=1, media_rank=1)
-        self.seed_spelling("丙")
-        self.seed_frequency("丙", "へい", "jpdb", rank=20000)
+    def test_media_rank_null_sorts_last_when_tier_and_score_tie(self):
+        self.seed_exact("Z-ranked", "らんく", occurrences=1, media_rank=1)
+        self.seed_spelling("A-null")
+        self.seed_frequency("A-null", "ぬる", "jpdb", rank=3000)
 
-        result = analyze_media("media", limit=2, db_path=self.db_path)
+        candidates = self.all_candidates(analyze_media("media", db_path=self.db_path))
+
+        self.assertEqual(
+            [
+                (candidate["word"], candidate["tier"], candidate["score"])
+                for candidate in candidates
+            ],
+            [("Z-ranked", "review", 3), ("A-null", "review", 3)],
+        )
+
+    def test_jpdb_rank_null_sorts_last_when_tier_and_score_tie(self):
+        self.seed_exact("Z-jpdb", "じぇい", occurrences=1, media_rank=1)
+        self.seed_frequency("Z-jpdb", "じぇい", "jpdb", rank=3000)
+        self.seed_exact("A-null", "ぬる", occurrences=1, media_rank=1)
+        self.seed_user("A-null", "ぬる", known=False)
+
+        candidates = self.all_candidates(analyze_media("media", db_path=self.db_path))
+
+        self.assertEqual(
+            [
+                (candidate["word"], candidate["tier"], candidate["score"])
+                for candidate in candidates
+            ],
+            [("Z-jpdb", "mine", 6), ("A-null", "mine", 6)],
+        )
+
+    def test_bccwj_rank_null_sorts_last_when_tier_and_score_tie(self):
+        self.seed_exact("Z-bccwj", "びい", occurrences=1, media_rank=1)
+        self.seed_frequency("Z-bccwj", "びい", "bccwj_luw", rank=3000)
+        self.seed_exact("A-null", "ぬる", occurrences=1, media_rank=1)
+        self.seed_user("A-null", "ぬる", encounters=3)
+
+        candidates = self.all_candidates(analyze_media("media", db_path=self.db_path))
+
+        self.assertEqual(
+            [
+                (candidate["word"], candidate["tier"], candidate["score"])
+                for candidate in candidates
+            ],
+            [("Z-bccwj", "mine", 5), ("A-null", "mine", 5)],
+        )
+
+    def test_limit_applies_after_global_ranking(self):
+        self.seed_exact("低", "てい", occurrences=1, media_rank=2)
+        self.seed_exact("高", "こう", occurrences=10, media_rank=1)
+
+        result = analyze_media("media", limit=1, db_path=self.db_path)
 
         self.assertEqual(
             [(candidate["word"], candidate["reading"]) for candidate in self.all_candidates(result)],
-            [("甲", "こう"), ("乙", "おつ")],
+            [("高", "こう")],
         )
-        self.assertEqual(result["summary"]["available_candidates"], 3)
-        self.assertEqual(result["summary"]["returned_candidates"], 2)
+        self.assertEqual(result["summary"]["available_candidates"], 2)
+        self.assertEqual(result["summary"]["returned_candidates"], 1)
 
     def test_word_and_reading_break_complete_rank_ties(self):
         self.seed_exact("開く", "ひらく", occurrences=1, media_rank=1)

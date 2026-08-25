@@ -162,7 +162,6 @@ def _read_frequency(connection, media_id):
         values = {
             field: row[field]
             for field in ("rank", "frequency", "frequency_per_million", "kana_rank")
-            if row[field] is not None
         }
         result.setdefault((row["word"], row["reading"]), {})[row["source"]] = values
     return result
