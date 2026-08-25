@@ -338,19 +338,23 @@ def analyze_media(source_key, *, limit=None, db_path=None) -> dict:
     try:
         with closing(get_connection(db_path)) as connection:
             connection.execute("BEGIN")
-            source = get_media_source(source_key, connection=connection)
-            media_rows = iter_media_candidates(connection, source["id"])
-            frequencies = _read_frequency(connection, source["id"])
-            users = _read_users(connection, source["id"])
-            known_spellings = _read_known_spellings(connection, source["id"])
-            candidates = sorted(
-                _build_candidates(media_rows, frequencies, users, known_spellings),
-                key=_rank_key,
-            )
+            analysis = _analyze_media(connection, source_key, limit=limit)
             connection.commit()
     except sqlite3.Error as error:
         raise _database_error(error) from error
+    return analysis
 
+
+def _analyze_media(connection, source_key, *, limit=None):
+    source = get_media_source(source_key, connection=connection)
+    media_rows = iter_media_candidates(connection, source["id"])
+    frequencies = _read_frequency(connection, source["id"])
+    users = _read_users(connection, source["id"])
+    known_spellings = _read_known_spellings(connection, source["id"])
+    candidates = sorted(
+        _build_candidates(media_rows, frequencies, users, known_spellings),
+        key=_rank_key,
+    )
     available_candidates = len(candidates)
     if limit is not None:
         candidates = candidates[:limit]
@@ -397,7 +401,20 @@ def recommend_media_word(
         if not isinstance(value, bool):
             raise InvalidInputError(f"{name} must be a boolean")
 
-    analysis = analyze_media(source_key, db_path=db_path)
+    try:
+        with closing(get_connection(db_path)) as connection:
+            connection.execute("BEGIN")
+            analysis = _analyze_media(connection, source_key)
+            resolution_readings = (
+                _recommendation_readings(
+                    connection, analysis["source"]["id"], word
+                )
+                if reading is None
+                else None
+            )
+            connection.commit()
+    except sqlite3.Error as error:
+        raise _database_error(error) from error
     candidates = [
         candidate
         for tier in ("mine", "review", "skip")
@@ -409,9 +426,6 @@ def recommend_media_word(
             candidate for candidate in candidates if candidate["reading"] == reading
         ]
     else:
-        resolution_readings = _recommendation_readings(
-            analysis["source"]["id"], word, db_path
-        )
         if len(resolution_readings) > 1:
             raise AmbiguousReadingError(
                 f"multiple media/corpus readings: {resolution_readings}",
@@ -456,28 +470,24 @@ def recommend_media_word(
     return result
 
 
-def _recommendation_readings(media_id, word, db_path):
-    try:
-        with closing(get_connection(db_path)) as connection:
-            rows = connection.execute(
-                """
-                WITH media_word(word) AS (
-                    SELECT word FROM media_words WHERE media_id=? AND word=?
-                    UNION
-                    SELECT word FROM media_spellings WHERE media_id=? AND word=?
-                )
-                SELECT reading FROM media_words
-                WHERE media_id=? AND word=?
-                UNION
-                SELECT frequency.reading FROM frequency
-                JOIN media_word ON media_word.word=frequency.word
-                WHERE frequency.word=? AND frequency.reading <> ''
-                ORDER BY reading
-                """,
-                (media_id, word, media_id, word, media_id, word, word),
-            ).fetchall()
-    except sqlite3.Error as error:
-        raise _database_error(error) from error
+def _recommendation_readings(connection, media_id, word):
+    rows = connection.execute(
+        """
+        WITH media_word(word) AS (
+            SELECT word FROM media_words WHERE media_id=? AND word=?
+            UNION
+            SELECT word FROM media_spellings WHERE media_id=? AND word=?
+        )
+        SELECT reading FROM media_words
+        WHERE media_id=? AND word=?
+        UNION
+        SELECT frequency.reading FROM frequency
+        JOIN media_word ON media_word.word=frequency.word
+        WHERE frequency.word=? AND frequency.reading <> ''
+        ORDER BY reading
+        """,
+        (media_id, word, media_id, word, media_id, word, word),
+    ).fetchall()
     return [row["reading"] for row in rows]
 
 

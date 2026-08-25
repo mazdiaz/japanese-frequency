@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -18,6 +19,7 @@ from japanese_frequency.mining import (
     export_media_analysis_csv,
     recommend_media_word,
 )
+from japanese_frequency.media import import_media_vocabulary
 from japanese_frequency.user_words import mark_known
 
 
@@ -133,6 +135,55 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(result["media"]["occurrences"], 7)
         self.assertEqual(result["media"]["media_rank"], 3)
         self.assertEqual(result["frequency"], {})
+
+    def test_recommendation_uses_one_snapshot_across_atomic_media_reimport(self):
+        self.seed_exact("開く", "あく", occurrences=7, media_rank=1)
+        self.execute(
+            "INSERT INTO frequency(word, reading, source, rank) VALUES (?, ?, ?, ?)",
+            ("開く", "ひらく", "jpdb", 99),
+        )
+        replacement = self.root / "replacement.csv"
+        replacement.write_text(
+            "Word,ReadingKana,Occurences\n開く,ひらく,2\n",
+            encoding="utf-8",
+        )
+        candidates_read = threading.Event()
+        replacement_done = threading.Event()
+        import_errors = []
+
+        import japanese_frequency.mining as mining
+
+        original_build = mining._build_candidates
+
+        def pausing_build(*arguments):
+            result = original_build(*arguments)
+            candidates_read.set()
+            self.assertTrue(replacement_done.wait(5), "media reimport did not finish")
+            return result
+
+        def replace_media():
+            self.assertTrue(candidates_read.wait(5), "recommendation did not read")
+            try:
+                import_media_vocabulary(
+                    replacement, "media", db_path=self.db_path
+                )
+            except BaseException as error:
+                import_errors.append(error)
+            finally:
+                replacement_done.set()
+
+        import_thread = threading.Thread(target=replace_media)
+        with patch("japanese_frequency.mining._build_candidates", new=pausing_build):
+            import_thread.start()
+            try:
+                with self.assertRaises(AmbiguousReadingError) as error:
+                    recommend_media_word("media", "開く", db_path=self.db_path)
+            finally:
+                import_thread.join(5)
+
+        self.assertFalse(import_thread.is_alive())
+        self.assertEqual(import_errors, [])
+        self.assertEqual(error.exception.matches, ["あく", "ひらく"])
 
     def test_recommendation_normalizes_word_and_reading(self):
         self.seed_exact("がく", "がく")
