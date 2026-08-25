@@ -100,12 +100,6 @@ python -m japanese_frequency analyze-media shuukura-v1 --limit 25
 python -m japanese_frequency analyze-media shuukura-v1 --output reports\shuukura-v1.csv
 ```
 
-Direct APIs:
-
-- `analyze_media(source_key, *, limit=None, db_path=None) -> dict`
-- `export_media_analysis_csv(analysis, output_path) -> dict`
-- `recommend_media_word(source_key, word, reading=None, *, failed_recall=False, successful_inference=False, transparent_composition=False, personally_useful=False, db_path=None) -> dict`
-
 Use contextual recommendation only after user supplies relevant context:
 
 ```console
