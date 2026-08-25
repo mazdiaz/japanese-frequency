@@ -69,8 +69,6 @@ sources, and `user_words` identity state.
 python -m japanese_frequency import-known C:\local\imports\migaku_known_words_DATE.txt
 ```
 
-Direct API: `import_migaku_known_words(path, *, db_path=None) -> dict`.
-Agent wrapper: `import_migaku_known_vocabulary(path, *, db_path=None)`.
 Inspect returned `filename`, `source_row_count`, `entry_count`, `sha256`, and
 `imported_at` before claiming refresh success.
 
@@ -83,11 +81,6 @@ update identities.
 ```console
 python -m japanese_frequency import-media C:\local\imports\media\Volume-1.txt --source-key shuukura-v1 --name "Volume 1"
 ```
-
-Direct API:
-`import_media_vocabulary(path, source_key, display_name=None, *, db_path=None) -> dict`.
-Agent wrapper:
-`import_japanese_media_vocabulary(path, source_key, display_name=None, *, db_path=None)`.
 
 Importer accepts UTF-8 `.txt` and `.csv`. Requested TXT uses same-stem CSV when
 that file exists. CSV requires `Word`, `ReadingKana`, and misspelled upstream

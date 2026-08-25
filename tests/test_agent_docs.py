@@ -1,4 +1,5 @@
 import inspect
+import re
 import unittest
 from pathlib import Path
 
@@ -69,6 +70,18 @@ class AgentDocumentationTests(unittest.TestCase):
                 self.assertIn(
                     f"`{function.__name__}{inspect.signature(function)}`", section
                 )
+
+    def test_import_signatures_only_appear_in_canonical_contract_section(self):
+        text = Path("AGENTS.md").read_text(encoding="utf-8")
+        canonical = _section(text, "## Public Interfaces")
+        outside = text.replace(canonical, "", 1)
+        declarations = re.findall(
+            r"`(?:import_migaku_known_words|import_media_vocabulary|"
+            r"import_migaku_known_vocabulary|import_japanese_media_vocabulary)"
+            r"\([^`\n]*\)(?: -> dict)?`",
+            outside,
+        )
+        self.assertEqual(declarations, [])
 
     def test_agent_guide_documents_complete_cli_syntax(self):
         text = Path("AGENTS.md").read_text(encoding="utf-8")
